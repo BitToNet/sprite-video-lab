@@ -110,6 +110,7 @@ function bindElements() {
     "lumaGammaInput",
     "lumaStrengthInput",
     "previewFrameButton",
+    "savePreviewButton",
     "processPreviewTimeLabel",
     "processPreviewKeyLabel",
     "previewSourceImage",
@@ -163,6 +164,7 @@ function bindEvents() {
   els.importPathButton.addEventListener("click", importFromPath);
   els.uploadInput.addEventListener("change", handleUploadInputChange);
   els.previewFrameButton.addEventListener("click", previewCurrentFrame);
+  els.savePreviewButton.addEventListener("click", saveProcessPreviewResult);
   els.processButton.addEventListener("click", processVideo);
   els.exportButton.addEventListener("click", exportFrames);
   bindUploadDropzone();
@@ -1056,6 +1058,7 @@ function resetProcessPreview() {
   els.previewProcessedEmpty.hidden = false;
   els.processPreviewTimeLabel.textContent = "\u53D6\u6837\u65F6\u95F4 -";
   els.processPreviewKeyLabel.textContent = "\u53D6\u6837\u65B9\u5F0F - / \u62A0\u56FE -";
+  updateSavePreviewButton();
 }
 
 function renderProcessPreview() {
@@ -1086,6 +1089,7 @@ function renderProcessPreview() {
   const matteDetail = formatMatteDetail(matte);
   const chromaDetail = matte.mode === "chroma" ? ` / \u80CC\u666F\u8272 ${state.processPreview.key_color || "-"}` : "";
   els.processPreviewKeyLabel.textContent = `${sourceModeLabel} / ${matteLabel}${matteDetail ? ` / ${matteDetail}` : ""}${chromaDetail}`;
+  updateSavePreviewButton();
   persistSession();
 }
 
@@ -1327,6 +1331,48 @@ async function previewCurrentFrame() {
       "success"
     );
   });
+}
+
+async function saveProcessPreviewResult() {
+  if (!isImageUpload()) {
+    setStatus("\u5F53\u524D\u53EA\u6709\u5355\u5F20\u56FE\u7247\u9884\u89C8\u53EF\u4EE5\u76F4\u63A5\u4FDD\u5B58\u3002", "error");
+    return;
+  }
+  if (!state.processPreview?.preview_id) {
+    setStatus("\u5148\u9884\u89C8\u5355\u5F20\u56FE\u7247\uFF0C\u518D\u4FDD\u5B58\u7ED3\u679C\u3002", "error");
+    return;
+  }
+
+  await withBusy(els.savePreviewButton, async () => {
+    setStatus("\u6B63\u5728\u4FDD\u5B58\u5F53\u524D\u9884\u89C8\u7ED3\u679C...");
+    const data = await apiJson("/api/save-preview", {
+      method: "POST",
+      body: {
+        preview_id: state.processPreview.preview_id,
+      },
+    });
+    state.job = data.job;
+    state.exportResult = null;
+    state.selected = new Set(data.job.frames.map((frame) => frame.index));
+    state.preview.currentIndex = 0;
+    renderJob();
+    updateSavePreviewButton();
+    els.resultPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    setStatus("\u9884\u89C8\u7ED3\u679C\u5DF2\u4FDD\u5B58\u4E3A\u6B63\u5F0F\u5355\u5F20\u8F93\u51FA\u3002", "success");
+  });
+}
+
+function updateSavePreviewButton() {
+  if (!els.savePreviewButton) {
+    return;
+  }
+
+  const previewMediaType = String(state.processPreview?.source_media_type || uploadMediaType()).toLowerCase();
+  const isSameUpload = !state.processPreview?.upload_id || state.processPreview.upload_id === state.upload?.upload_id;
+  const isImage = isImageUpload() && previewMediaType === "image";
+  const canSave = isImage && isSameUpload && Boolean(state.processPreview?.preview_id);
+  els.savePreviewButton.hidden = !isImageUpload();
+  els.savePreviewButton.disabled = !canSave;
 }
 
 function renderJob() {

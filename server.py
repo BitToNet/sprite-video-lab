@@ -1557,6 +1557,16 @@ def preview_dir(preview_id: str) -> Path:
     return PREVIEWS_DIR / preview_id
 
 
+def load_preview_manifest(preview_id: str) -> dict:
+    preview_id = str(preview_id or "").strip()
+    if not preview_id or Path(preview_id).name != preview_id:
+        raise ValueError("invalid preview id")
+    path = preview_dir(preview_id) / "preview.json"
+    if not path.exists():
+        raise FileNotFoundError(f"preview not found: {preview_id}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def preview_frame(
     upload_id: str,
     sample_time: float,
@@ -1666,6 +1676,98 @@ def preview_frame(
         },
     }
     (root / "preview.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return manifest
+
+
+def save_preview_as_job(preview_id: str) -> dict:
+    preview = load_preview_manifest(preview_id)
+    if str(preview.get("source_media_type") or "").lower() != "image":
+        raise ValueError("direct preview save is only available for image uploads")
+
+    source_preview_path = preview_dir(preview["preview_id"]) / "source.png"
+    raw_preview_path = preview_dir(preview["preview_id"]) / "raw.png"
+    processed_preview_path = preview_dir(preview["preview_id"]) / "processed.png"
+    if not processed_preview_path.exists():
+        raise FileNotFoundError(f"processed preview missing: {processed_preview_path}")
+
+    source_path = repair_mojibake_path(Path(preview["source_path"]))
+    media_type = str(preview.get("source_media_type") or "image").lower()
+    info = media_info(source_path, media_type)
+    options = preview.get("options") or {}
+    matte_info = preview.get("matte") or {"mode": options.get("matte_mode") or "chroma"}
+
+    job_id = timestamped_id()
+    root = job_dir(job_id)
+    raw_dir = root / "raw"
+    processed_dir = root / "processed"
+    thumbs_dir = root / "thumbs"
+    for directory in (raw_dir, processed_dir, thumbs_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    if raw_preview_path.exists():
+        shutil.copy2(raw_preview_path, raw_dir / "frame_00001.png")
+    elif source_preview_path.exists():
+        shutil.copy2(source_preview_path, raw_dir / "frame_00001.png")
+
+    frame_name = "frame_001.png"
+    thumb_name = "thumb_001.png"
+    frame_path = processed_dir / frame_name
+    thumb_path = thumbs_dir / thumb_name
+    shutil.copy2(processed_preview_path, frame_path)
+
+    frame = open_rgba_image(frame_path)
+    thumb = frame.copy()
+    thumb.thumbnail((128, 128))
+    thumb.save(thumb_path)
+    bbox = frame.getchannel("A").getbbox()
+    canvas_size = frame.size
+
+    manifest = {
+        "job_id": job_id,
+        "upload_id": preview.get("upload_id") or "",
+        "job_dir": str(root),
+        "processed_dir": str(processed_dir),
+        "raw_dir": str(raw_dir),
+        "source_path": str(source_path),
+        "source_media_type": media_type,
+        "ffmpeg_accel": preview.get("ffmpeg_accel") or {},
+        "video_info": info,
+        "options": {
+            "start_time": 0,
+            "end_time": 0,
+            "keep_every": 1,
+            "target_size": options.get("target_size") or canvas_size[1],
+            "reduce_px": options.get("reduce_px") or 0,
+            "canvas_mode": normalize_canvas_mode(str(options.get("canvas_mode") or "auto")),
+            "output_width": options.get("output_width") or canvas_size[0],
+            "output_height": options.get("output_height") or canvas_size[1],
+            "chroma_enabled": bool(options.get("chroma_enabled", True)),
+            "matte_mode": matte_info.get("mode") or options.get("matte_mode") or "chroma",
+            "matte": matte_info,
+            "key_mode": options.get("key_mode") or "auto",
+            "key_color": preview.get("key_color") or "#000000",
+            "threshold": options.get("threshold") or 0,
+            "softness": options.get("softness") or 0,
+            "despill_strength": options.get("despill_strength") or 0,
+            "halo_pixels": options.get("halo_pixels") or 0,
+            "corridorkey_enabled": bool(options.get("corridorkey_enabled", False)),
+            "corridorkey_screen": options.get("corridorkey_screen") or "auto",
+            "scale": preview.get("scale") or 1,
+        },
+        "frame_count": 1,
+        "frames": [
+            {
+                "index": 0,
+                "name": frame_name,
+                "url": f"/work/jobs/{job_id}/processed/{frame_name}",
+                "thumb_url": f"/work/jobs/{job_id}/thumbs/{thumb_name}",
+                "bbox": list(bbox) if bbox else None,
+                "width": canvas_size[0],
+                "height": canvas_size[1],
+            }
+        ],
+    }
+    save_job_manifest(job_id, manifest)
     return manifest
 
 
@@ -1855,6 +1957,11 @@ class AppHandler(BaseHTTPRequestHandler):
                     corridorkey_screen=normalize_corridorkey_screen(str(payload.get("corridorkey_screen") or "auto")),
                 )
                 self.send_json({"ok": True, "preview": result})
+                return
+            if parsed.path == "/api/save-preview":
+                payload = self.read_json_body()
+                result = save_preview_as_job(str(payload.get("preview_id") or ""))
+                self.send_json({"ok": True, "job": result})
                 return
             if parsed.path == "/api/export":
                 payload = self.read_json_body()

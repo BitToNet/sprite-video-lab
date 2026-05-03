@@ -18,6 +18,11 @@ const state = {
     source: 100,
     processed: 100,
   },
+  processPreviewPan: {
+    source: { x: 0, y: 0 },
+    processed: { x: 0, y: 0 },
+  },
+  processPreviewDrag: null,
 };
 
 const els = {};
@@ -257,6 +262,12 @@ function bindEvents() {
   });
   bindProcessPreviewZoom("source");
   bindProcessPreviewZoom("processed");
+  bindProcessPreviewPan("source");
+  bindProcessPreviewPan("processed");
+  window.addEventListener("resize", () => {
+    clampProcessPreviewPanToStage("source");
+    clampProcessPreviewPanToStage("processed");
+  });
 
   [
     els.keepEveryInput,
@@ -327,10 +338,7 @@ function bindTimePair(key, rangeEl, numberEl, decreaseButton, increaseButton) {
 }
 
 function bindProcessPreviewZoom(kind) {
-  const input = kind === "source" ? els.previewSourceZoomInput : els.previewProcessedZoomInput;
-  const decreaseButton = kind === "source" ? els.previewSourceZoomOutButton : els.previewProcessedZoomOutButton;
-  const resetButton = kind === "source" ? els.previewSourceZoomResetButton : els.previewProcessedZoomResetButton;
-  const increaseButton = kind === "source" ? els.previewSourceZoomInButton : els.previewProcessedZoomInButton;
+  const { input, decreaseButton, resetButton, increaseButton } = getProcessPreviewElements(kind);
 
   input.addEventListener("input", () => {
     updateProcessPreviewZoom(kind, Number(input.value || 100), true);
@@ -339,27 +347,171 @@ function bindProcessPreviewZoom(kind) {
     updateProcessPreviewZoom(kind, state.processPreviewZoom[kind] - 10, true);
   });
   resetButton.addEventListener("click", () => {
-    updateProcessPreviewZoom(kind, 100, true);
+    resetProcessPreviewView(kind, true);
   });
   increaseButton.addEventListener("click", () => {
     updateProcessPreviewZoom(kind, state.processPreviewZoom[kind] + 10, true);
   });
 }
 
+function bindProcessPreviewPan(kind) {
+  const { image, stage } = getProcessPreviewElements(kind);
+  if (!stage) {
+    return;
+  }
+
+  image.addEventListener("load", () => {
+    clampProcessPreviewPanToStage(kind);
+  });
+
+  stage.addEventListener("pointerdown", (event) => {
+    if (image.hidden || !image.getAttribute("src")) {
+      return;
+    }
+    if (event.button != null && event.button !== 0) {
+      return;
+    }
+
+    const pan = state.processPreviewPan[kind] || { x: 0, y: 0 };
+    state.processPreviewDrag = {
+      kind,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPanX: pan.x,
+      startPanY: pan.y,
+    };
+    stage.classList.add("dragging");
+    if (typeof stage.setPointerCapture === "function") {
+      stage.setPointerCapture(event.pointerId);
+    }
+    event.preventDefault();
+  });
+
+  stage.addEventListener("pointermove", (event) => {
+    const drag = state.processPreviewDrag;
+    if (!drag || drag.kind !== kind || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    updateProcessPreviewPan(
+      kind,
+      drag.startPanX + event.clientX - drag.startX,
+      drag.startPanY + event.clientY - drag.startY
+    );
+    event.preventDefault();
+  });
+
+  const endDrag = (event) => {
+    const drag = state.processPreviewDrag;
+    if (!drag || drag.kind !== kind || drag.pointerId !== event.pointerId) {
+      return;
+    }
+
+    state.processPreviewDrag = null;
+    stage.classList.remove("dragging");
+    if (typeof stage.hasPointerCapture === "function" && stage.hasPointerCapture(event.pointerId)) {
+      stage.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+  stage.addEventListener("lostpointercapture", endDrag);
+  stage.addEventListener("dblclick", () => {
+    updateProcessPreviewPan(kind, 0, 0);
+  });
+}
+
+function getProcessPreviewElements(kind) {
+  const isSource = kind === "source";
+  const image = isSource ? els.previewSourceImage : els.previewProcessedImage;
+  return {
+    input: isSource ? els.previewSourceZoomInput : els.previewProcessedZoomInput,
+    label: isSource ? els.previewSourceZoomLabel : els.previewProcessedZoomLabel,
+    image,
+    stage: image?.closest(".image-preview-stage") || null,
+    decreaseButton: isSource ? els.previewSourceZoomOutButton : els.previewProcessedZoomOutButton,
+    resetButton: isSource ? els.previewSourceZoomResetButton : els.previewProcessedZoomResetButton,
+    increaseButton: isSource ? els.previewSourceZoomInButton : els.previewProcessedZoomInButton,
+  };
+}
+
 function updateProcessPreviewZoom(kind, value, shouldPersist = false) {
   const normalized = clamp(Math.round(value / 10) * 10, 50, 800);
   state.processPreviewZoom[kind] = normalized;
 
-  const input = kind === "source" ? els.previewSourceZoomInput : els.previewProcessedZoomInput;
-  const label = kind === "source" ? els.previewSourceZoomLabel : els.previewProcessedZoomLabel;
-  const image = kind === "source" ? els.previewSourceImage : els.previewProcessedImage;
+  const { input, label } = getProcessPreviewElements(kind);
 
   input.value = String(normalized);
   label.textContent = `${normalized}%`;
-  image.style.transform = `scale(${normalized / 100})`;
+  clampProcessPreviewPanToStage(kind);
 
   if (shouldPersist) {
     persistSession();
+  }
+}
+
+function updateProcessPreviewPan(kind, x, y) {
+  state.processPreviewPan[kind] = getClampedProcessPreviewPan(kind, x, y);
+  applyProcessPreviewTransform(kind);
+}
+
+function clampProcessPreviewPanToStage(kind) {
+  const pan = state.processPreviewPan[kind] || { x: 0, y: 0 };
+  updateProcessPreviewPan(kind, pan.x, pan.y);
+}
+
+function getClampedProcessPreviewPan(kind, x, y) {
+  const { image, stage } = getProcessPreviewElements(kind);
+  const panX = Number.isFinite(Number(x)) ? Number(x) : 0;
+  const panY = Number.isFinite(Number(y)) ? Number(y) : 0;
+  if (!image || !stage || image.hidden || !image.getAttribute("src")) {
+    return { x: 0, y: 0 };
+  }
+
+  const scale = state.processPreviewZoom[kind] / 100;
+  const renderedWidth = image.offsetWidth * scale;
+  const renderedHeight = image.offsetHeight * scale;
+  const maxX = Math.max(0, (renderedWidth - stage.clientWidth) / 2);
+  const maxY = Math.max(0, (renderedHeight - stage.clientHeight) / 2);
+  return {
+    x: clamp(panX, -maxX, maxX),
+    y: clamp(panY, -maxY, maxY),
+  };
+}
+
+function applyProcessPreviewTransform(kind) {
+  const { image } = getProcessPreviewElements(kind);
+  if (!image) {
+    return;
+  }
+  const pan = state.processPreviewPan[kind] || { x: 0, y: 0 };
+  const scale = state.processPreviewZoom[kind] / 100;
+  image.style.transform = `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${scale})`;
+}
+
+function resetProcessPreviewPan(kind) {
+  state.processPreviewPan[kind] = { x: 0, y: 0 };
+  applyProcessPreviewTransform(kind);
+}
+
+function resetProcessPreviewView(kind, shouldPersist = false) {
+  updateProcessPreviewZoom(kind, 100, false);
+  resetProcessPreviewPan(kind);
+  if (shouldPersist) {
+    persistSession();
+  }
+}
+
+function setProcessPreviewStageActive(kind, isActive) {
+  const { stage } = getProcessPreviewElements(kind);
+  if (!stage) {
+    return;
+  }
+  stage.classList.toggle("is-pannable", isActive);
+  if (!isActive) {
+    stage.classList.remove("dragging");
   }
 }
 
@@ -892,12 +1044,14 @@ function applyUpload(upload) {
 
 function resetProcessPreview() {
   state.processPreview = null;
-  updateProcessPreviewZoom("source", 100, false);
-  updateProcessPreviewZoom("processed", 100, false);
+  resetProcessPreviewView("source", false);
+  resetProcessPreviewView("processed", false);
   els.previewSourceImage.hidden = true;
   els.previewProcessedImage.hidden = true;
   els.previewSourceImage.removeAttribute("src");
   els.previewProcessedImage.removeAttribute("src");
+  setProcessPreviewStageActive("source", false);
+  setProcessPreviewStageActive("processed", false);
   els.previewSourceEmpty.hidden = false;
   els.previewProcessedEmpty.hidden = false;
   els.processPreviewTimeLabel.textContent = "\u53D6\u6837\u65F6\u95F4 -";
@@ -914,10 +1068,14 @@ function renderProcessPreview() {
     state.processPreview.ffmpeg_accel,
     state.processPreview.source_media_type || uploadMediaType()
   );
+  resetProcessPreviewPan("source");
+  resetProcessPreviewPan("processed");
   els.previewSourceImage.src = state.processPreview.source_url;
   els.previewProcessedImage.src = state.processPreview.processed_url;
   els.previewSourceImage.hidden = false;
   els.previewProcessedImage.hidden = false;
+  setProcessPreviewStageActive("source", true);
+  setProcessPreviewStageActive("processed", true);
   els.previewSourceEmpty.hidden = true;
   els.previewProcessedEmpty.hidden = true;
   els.processPreviewTimeLabel.textContent = isImageUpload()

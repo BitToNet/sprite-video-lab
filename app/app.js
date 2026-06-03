@@ -118,9 +118,11 @@ function bindElements() {
     "lumaStrengthInput",
     "batchGreenToBlackInput",
     "batchSemiTransparentToBlackInput",
+    "batchSemiTransparentToOpaqueInput",
     "previewFrameButton",
     "greenToBlackButton",
     "semiTransparentToBlackButton",
+    "semiTransparentToOpaqueButton",
     "savePreviewButton",
     "processPreviewTimeLabel",
     "processPreviewKeyLabel",
@@ -188,6 +190,7 @@ function bindEvents() {
   els.previewFrameButton.addEventListener("click", previewCurrentFrame);
   els.greenToBlackButton.addEventListener("click", applyGreenToBlackPreview);
   els.semiTransparentToBlackButton.addEventListener("click", applySemiTransparentToBlackPreview);
+  els.semiTransparentToOpaqueButton.addEventListener("click", applySemiTransparentToOpaquePreview);
   els.savePreviewButton.addEventListener("click", downloadProcessPreviewResult);
   els.processButton.addEventListener("click", processVideo);
   els.exportButton.addEventListener("click", exportFrames);
@@ -350,6 +353,7 @@ function bindEvents() {
     els.lumaStrengthInput,
     els.batchGreenToBlackInput,
     els.batchSemiTransparentToBlackInput,
+    els.batchSemiTransparentToOpaqueInput,
     els.startInput,
     els.endInput,
   ].forEach((element) => {
@@ -692,6 +696,7 @@ function collectFormState() {
     luma_strength: Number(els.lumaStrengthInput.value || 1),
     batch_green_to_black: els.batchGreenToBlackInput.checked,
     batch_semitransparent_to_black: els.batchSemiTransparentToBlackInput.checked,
+    batch_semitransparent_to_opaque: els.batchSemiTransparentToOpaqueInput.checked,
     preview_background: state.preview.background,
     preview_interval: clamp(Number(els.previewIntervalInput.value || 100), 20, 5000),
     preview_reversed: state.preview.isReversed,
@@ -739,6 +744,7 @@ function collectProcessingPayload() {
     luma_strength: Number(els.lumaStrengthInput.value || 1),
     batch_green_to_black: els.batchGreenToBlackInput.checked,
     batch_semitransparent_to_black: els.batchSemiTransparentToBlackInput.checked,
+    batch_semitransparent_to_opaque: els.batchSemiTransparentToOpaqueInput.checked,
   };
 }
 
@@ -793,6 +799,9 @@ function applyFormState(snapshot) {
   if (snapshot.batch_green_to_black != null) els.batchGreenToBlackInput.checked = Boolean(snapshot.batch_green_to_black);
   if (snapshot.batch_semitransparent_to_black != null) {
     els.batchSemiTransparentToBlackInput.checked = Boolean(snapshot.batch_semitransparent_to_black);
+  }
+  if (snapshot.batch_semitransparent_to_opaque != null) {
+    els.batchSemiTransparentToOpaqueInput.checked = Boolean(snapshot.batch_semitransparent_to_opaque);
   }
   updatePreviewBackground(snapshot.preview_background || state.preview.background, false);
   if (snapshot.preview_interval != null) els.previewIntervalInput.value = String(snapshot.preview_interval);
@@ -1677,6 +1686,29 @@ async function applySemiTransparentToBlackPreview() {
   });
 }
 
+async function applySemiTransparentToOpaquePreview() {
+  if (!state.processPreview?.preview_id) {
+    setStatus("\u5148\u9884\u89C8\u5F53\u524D\u5E27\uFF0C\u518D\u628A\u534A\u900F\u660E\u50CF\u7D20\u53D8\u6210\u4E0D\u900F\u660E\u3002", "error");
+    return;
+  }
+
+  await withBusy(els.semiTransparentToOpaqueButton, async () => {
+    setStatus("\u6B63\u5728\u4FDD\u7559\u534A\u900F\u50CF\u7D20\u989C\u8272\uFF0C\u5E76\u628A alpha \u63D0\u5230\u4E0D\u900F\u660E...");
+    const data = await apiJson("/api/preview-semitransparent-to-opaque", {
+      method: "POST",
+      body: {
+        preview_id: state.processPreview.preview_id,
+        alpha_min: 1,
+        alpha_max: 254,
+      },
+    });
+    state.processPreview = data.preview;
+    renderProcessPreview();
+    const changed = Number(data.preview?.postprocess?.semitransparent_to_opaque?.changed_pixels || 0);
+    setStatus(`\u534A\u900F\u53D8\u4E0D\u900F\u660E\u5B8C\u6210\uFF0C\u5904\u7406\u4E86 ${changed.toLocaleString()} \u4E2A\u50CF\u7D20\u3002`, "success");
+  });
+}
+
 function buildPreviewDownloadFilename() {
   const sourceName = stripFileExtension(state.upload?.display_name || "");
   const safeSourceName = sanitizeDownloadFilenamePart(sourceName, "sprite-preview");
@@ -1724,7 +1756,7 @@ function triggerFileDownload(url, filename) {
 }
 
 function updateSavePreviewButton() {
-  if (!els.savePreviewButton || !els.greenToBlackButton || !els.semiTransparentToBlackButton) {
+  if (!els.savePreviewButton || !els.greenToBlackButton || !els.semiTransparentToBlackButton || !els.semiTransparentToOpaqueButton) {
     return;
   }
 
@@ -1735,6 +1767,8 @@ function updateSavePreviewButton() {
   els.greenToBlackButton.disabled = !canPostprocess;
   els.semiTransparentToBlackButton.hidden = !state.upload;
   els.semiTransparentToBlackButton.disabled = !canPostprocess;
+  els.semiTransparentToOpaqueButton.hidden = !state.upload;
+  els.semiTransparentToOpaqueButton.disabled = !canPostprocess;
   els.savePreviewButton.hidden = !state.upload;
   els.savePreviewButton.disabled = !canDownload;
 }
@@ -2287,6 +2321,7 @@ async function exportFrames() {
         job_id: state.job.job_id,
         selected_indices: selectedFrames.map((frame) => frame.index),
         sheet_columns: Number(els.sheetColumnsInput.value || 4),
+        video_duration_ms: Number(els.previewIntervalInput.value || 100),
       },
     });
     state.exportResult = data.export;
@@ -2303,13 +2338,18 @@ function renderExportResult() {
   }
 
   els.exportResult.hidden = false;
+  const videoLink = state.exportResult.video_url
+    ? `<a href="${state.exportResult.video_url}" target="_blank" rel="noopener">animation.mov</a>`
+    : "";
+
   els.exportResult.innerHTML = `
     <div class="result-summary">
       ${summaryCard("\u5bfc\u51fa\u5e27\u6570", `${state.exportResult.frame_count} \u5e27`)}
-      ${summaryCard("\u5bfc\u51fa\u5185\u5bb9", "PNG \u5e27 / sprite sheet / zip / manifest")}
+      ${summaryCard("\u5bfc\u51fa\u5185\u5bb9", "PNG \u5e27 / \u900f\u660e MOV / sprite sheet / zip / manifest")}
     </div>
     <div class="link-list">
       <button id="openExportDirButton" class="ghost-button" type="button">\u6253\u5f00\u5bfc\u51fa\u76ee\u5f55</button>
+      ${videoLink}
       <a href="${state.exportResult.zip_url}" target="_blank" rel="noopener">frames.zip</a>
       <a href="${state.exportResult.sheet_url}" target="_blank" rel="noopener">sprite_sheet.png</a>
       <a href="${state.exportResult.manifest_url}" target="_blank" rel="noopener">export.json</a>

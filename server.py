@@ -254,6 +254,10 @@ def clamp_float(value: float, minimum: float, maximum: float) -> float:
     return min(maximum, max(minimum, value))
 
 
+def clamp_int(value: int, minimum: int, maximum: int) -> int:
+    return min(maximum, max(minimum, value))
+
+
 def normalize_matte_mode(raw: str, chroma_enabled: bool) -> str:
     value = str(raw or "").strip().lower().replace("-", "_")
     aliases = {
@@ -1598,6 +1602,7 @@ def process_video_to_job(
     corridorkey_screen: str,
     batch_green_to_black: bool = False,
     batch_semitransparent_to_black: bool = False,
+    batch_semitransparent_to_opaque: bool = False,
 ) -> dict:
     source_path, media_type = source_media_entry(upload_id)
     info = media_info(source_path, media_type)
@@ -1659,6 +1664,7 @@ def process_video_to_job(
     postprocess_changed = {
         "green_to_black": 0,
         "semitransparent_to_black": 0,
+        "semitransparent_to_opaque": 0,
     }
     for index, frame in enumerate(rendered_frames):
         frame_name = f"frame_{index + 1:03d}.png"
@@ -1671,6 +1677,9 @@ def process_video_to_job(
         if batch_semitransparent_to_black:
             frame, changed = semitransparent_to_black_image(frame)
             postprocess_changed["semitransparent_to_black"] += changed
+        if batch_semitransparent_to_opaque:
+            frame, changed = semitransparent_to_opaque_image(frame)
+            postprocess_changed["semitransparent_to_opaque"] += changed
         frame.save(frame_path)
         thumb = frame.copy()
         thumb.thumbnail((128, 128))
@@ -1719,6 +1728,7 @@ def process_video_to_job(
             "corridorkey_screen": matte_info["corridorkey_screen_color"],
             "batch_green_to_black": bool(batch_green_to_black),
             "batch_semitransparent_to_black": bool(batch_semitransparent_to_black),
+            "batch_semitransparent_to_opaque": bool(batch_semitransparent_to_opaque),
             "postprocess_changed_pixels": postprocess_changed,
             "scale": scale,
         },
@@ -1858,6 +1868,54 @@ def semitransparent_to_black_preview(preview_id: str, alpha_min: int = 1, alpha_
     return preview
 
 
+def semitransparent_to_opaque_image(
+    image: Image.Image,
+    alpha_min: int = 1,
+    alpha_max: int = 254,
+) -> tuple[Image.Image, int]:
+    rgba = image.convert("RGBA")
+    output_pixels: list[tuple[int, int, int, int]] = []
+    changed = 0
+    alpha_min = max(0, min(255, int(alpha_min)))
+    alpha_max = max(alpha_min, min(255, int(alpha_max)))
+
+    for r_value, g_value, b_value, alpha in rgba.getdata():
+        if alpha_min <= alpha <= alpha_max:
+            output_pixels.append((r_value, g_value, b_value, 255))
+            changed += 1
+        else:
+            output_pixels.append((r_value, g_value, b_value, alpha))
+
+    cleaned = Image.new("RGBA", rgba.size)
+    cleaned.putdata(output_pixels)
+    return cleaned, changed
+
+
+def semitransparent_to_opaque_preview(preview_id: str, alpha_min: int = 1, alpha_max: int = 254) -> dict:
+    preview = load_preview_manifest(preview_id)
+    root = preview_dir(preview["preview_id"])
+    processed_path = root / "processed.png"
+    if not processed_path.exists():
+        raise FileNotFoundError(f"processed preview missing: {processed_path}")
+
+    image = open_rgba_image(processed_path)
+    cleaned, changed = semitransparent_to_opaque_image(image, alpha_min=alpha_min, alpha_max=alpha_max)
+    image.close()
+    cleaned.save(processed_path)
+    cleaned.close()
+
+    postprocess = preview.setdefault("postprocess", {})
+    semitransparent_opaque = postprocess.setdefault("semitransparent_to_opaque", {})
+    semitransparent_opaque["enabled"] = True
+    semitransparent_opaque["alpha_min"] = max(0, min(255, int(alpha_min)))
+    semitransparent_opaque["alpha_max"] = max(0, min(255, int(alpha_max)))
+    semitransparent_opaque["changed_pixels"] = changed
+    semitransparent_opaque["updated_at"] = iso_now()
+    preview["processed_url"] = f"/work/previews/{preview['preview_id']}/processed.png?ts={int(time.time() * 1000)}"
+    save_preview_manifest(preview["preview_id"], preview)
+    return preview
+
+
 def preview_frame(
     upload_id: str,
     sample_time: float,
@@ -1881,6 +1939,9 @@ def preview_frame(
     luma_strength: float,
     corridorkey_enabled: bool,
     corridorkey_screen: str,
+    batch_green_to_black: bool = False,
+    batch_semitransparent_to_black: bool = False,
+    batch_semitransparent_to_opaque: bool = False,
 ) -> dict:
     source_path, media_type = source_media_entry(upload_id)
     info = media_info(source_path, media_type)
@@ -1933,7 +1994,22 @@ def preview_frame(
         canvas_mode,
         hard_alpha=matte_info["mode"] == "chroma" and softness == 0 and not matte_info["corridorkey_enabled"],
     )
-    rendered_frames[0].save(processed_path)
+    rendered_frame = rendered_frames[0]
+    postprocess_changed = {
+        "green_to_black": 0,
+        "semitransparent_to_black": 0,
+        "semitransparent_to_opaque": 0,
+    }
+    if batch_green_to_black:
+        rendered_frame, changed = green_to_black_image(rendered_frame)
+        postprocess_changed["green_to_black"] += changed
+    if batch_semitransparent_to_black:
+        rendered_frame, changed = semitransparent_to_black_image(rendered_frame)
+        postprocess_changed["semitransparent_to_black"] += changed
+    if batch_semitransparent_to_opaque:
+        rendered_frame, changed = semitransparent_to_opaque_image(rendered_frame)
+        postprocess_changed["semitransparent_to_opaque"] += changed
+    rendered_frame.save(processed_path)
 
     manifest = {
         "preview_id": preview_id,
@@ -1947,6 +2023,7 @@ def preview_frame(
         "matte": matte_info,
         "ffmpeg_accel": ffmpeg_accel,
         "scale": scale,
+        "postprocess_changed": postprocess_changed,
         "options": {
             "target_size": target_size,
             "reduce_px": reduce_px,
@@ -1962,6 +2039,10 @@ def preview_frame(
             "halo_pixels": halo_pixels,
             "corridorkey_enabled": matte_info["corridorkey_enabled"],
             "corridorkey_screen": matte_info["corridorkey_screen_color"],
+            "batch_green_to_black": bool(batch_green_to_black),
+            "batch_semitransparent_to_black": bool(batch_semitransparent_to_black),
+            "batch_semitransparent_to_opaque": bool(batch_semitransparent_to_opaque),
+            "postprocess_changed_pixels": postprocess_changed,
         },
     }
     (root / "preview.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2177,7 +2258,59 @@ def import_animation_frames_to_job(file_items: list) -> dict:
     return manifest
 
 
-def export_job(job_id: str, selected_indices: list[int], sheet_columns: int) -> dict:
+def save_alpha_mov(
+    frame_paths: list[Path],
+    frame_sizes: list[tuple[int, int]],
+    output_path: Path,
+    cell_width: int,
+    cell_height: int,
+    duration_ms: int,
+) -> None:
+    if not frame_paths:
+        raise ValueError("no frames selected for alpha video export")
+    ffmpeg = resolve_ffmpeg_binary("ffmpeg")
+    duration_ms = clamp_int(duration_ms, 20, 5000)
+    video_frames_dir = output_path.parent / "video_frames_tmp"
+    if video_frames_dir.exists():
+        shutil.rmtree(video_frames_dir)
+    video_frames_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for index, frame_path in enumerate(frame_paths, start=1):
+            frame = open_rgba_image(frame_path)
+            frame_width, frame_height = frame_sizes[index - 1]
+            canvas = Image.new("RGBA", (cell_width, cell_height), (0, 0, 0, 0))
+            offset_x = (cell_width - frame_width) // 2
+            offset_y = (cell_height - frame_height) // 2
+            canvas.paste(frame, (offset_x, offset_y), frame)
+            frame.close()
+            canvas.save(video_frames_dir / f"frame_{index:03d}.png")
+            canvas.close()
+
+        input_pattern = video_frames_dir / "frame_%03d.png"
+        run_process(
+            [
+                ffmpeg,
+                "-y",
+                "-framerate",
+                f"1000/{duration_ms}",
+                "-start_number",
+                "1",
+                "-i",
+                str(input_pattern),
+                "-frames:v",
+                str(len(frame_paths)),
+                "-c:v",
+                "qtrle",
+                "-pix_fmt",
+                "argb",
+                str(output_path),
+            ]
+        )
+    finally:
+        shutil.rmtree(video_frames_dir, ignore_errors=True)
+
+
+def export_job(job_id: str, selected_indices: list[int], sheet_columns: int, video_duration_ms: int) -> dict:
     manifest = load_job_manifest(job_id)
     processed_dir = job_dir(job_id) / "processed"
     target_dir = EXPORTS_DIR / f"{timestamped_id()}-export"
@@ -2230,6 +2363,11 @@ def export_job(job_id: str, selected_indices: list[int], sheet_columns: int) -> 
         frame.close()
     sheet_path = target_dir / "sprite_sheet.png"
     sheet.save(sheet_path)
+    sheet.close()
+
+    video_duration_ms = clamp_int(video_duration_ms, 20, 5000)
+    video_path = target_dir / "animation.mov"
+    save_alpha_mov(copied_paths, frame_sizes, video_path, cell_width, cell_height, video_duration_ms)
 
     export_manifest = {
         "job_id": job_id,
@@ -2241,6 +2379,8 @@ def export_job(job_id: str, selected_indices: list[int], sheet_columns: int) -> 
         "frames_dir": str(frames_dir),
         "zip_path": str(zip_path),
         "sheet_path": str(sheet_path),
+        "video_path": str(video_path),
+        "video_duration_ms": video_duration_ms,
     }
     (target_dir / "export.json").write_text(json.dumps(export_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return {
@@ -2248,7 +2388,10 @@ def export_job(job_id: str, selected_indices: list[int], sheet_columns: int) -> 
         "frames_dir": str(frames_dir),
         "zip_url": f"/work/exports/{target_dir.name}/frames.zip",
         "sheet_url": f"/work/exports/{target_dir.name}/sprite_sheet.png",
+        "video_url": f"/work/exports/{target_dir.name}/animation.mov",
         "manifest_url": f"/work/exports/{target_dir.name}/export.json",
+        "frame_count": len(copied_paths),
+        "video_duration_ms": video_duration_ms,
     }
 
 
@@ -2364,6 +2507,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     corridorkey_screen=normalize_corridorkey_screen(str(payload.get("corridorkey_screen") or "auto")),
                     batch_green_to_black=bool(payload.get("batch_green_to_black", False)),
                     batch_semitransparent_to_black=bool(payload.get("batch_semitransparent_to_black", False)),
+                    batch_semitransparent_to_opaque=bool(payload.get("batch_semitransparent_to_opaque", False)),
                 )
                 self.send_json({"ok": True, "job": result})
                 return
@@ -2392,6 +2536,9 @@ class AppHandler(BaseHTTPRequestHandler):
                     luma_strength=max(0.0, min(2.0, safe_float(payload.get("luma_strength"), 1.0))),
                     corridorkey_enabled=bool(payload.get("corridorkey_enabled", False)),
                     corridorkey_screen=normalize_corridorkey_screen(str(payload.get("corridorkey_screen") or "auto")),
+                    batch_green_to_black=bool(payload.get("batch_green_to_black", False)),
+                    batch_semitransparent_to_black=bool(payload.get("batch_semitransparent_to_black", False)),
+                    batch_semitransparent_to_opaque=bool(payload.get("batch_semitransparent_to_opaque", False)),
                 )
                 self.send_json({"ok": True, "preview": result})
                 return
@@ -2418,12 +2565,22 @@ class AppHandler(BaseHTTPRequestHandler):
                 )
                 self.send_json({"ok": True, "preview": result})
                 return
+            if parsed.path == "/api/preview-semitransparent-to-opaque":
+                payload = self.read_json_body()
+                result = semitransparent_to_opaque_preview(
+                    str(payload.get("preview_id") or ""),
+                    alpha_min=max(0, min(255, safe_int(payload.get("alpha_min"), 1))),
+                    alpha_max=max(0, min(255, safe_int(payload.get("alpha_max"), 254))),
+                )
+                self.send_json({"ok": True, "preview": result})
+                return
             if parsed.path == "/api/export":
                 payload = self.read_json_body()
                 result = export_job(
                     job_id=str(payload.get("job_id") or ""),
                     selected_indices=[safe_int(value, -1) for value in (payload.get("selected_indices") or [])],
                     sheet_columns=max(1, safe_int(payload.get("sheet_columns"), 4)),
+                    video_duration_ms=safe_int(payload.get("video_duration_ms"), 100),
                 )
                 self.send_json({"ok": True, "export": result})
                 return

@@ -10,7 +10,8 @@ Sprite Video Lab 是一个本地网页工具，用来把视频片段、单张图
 - 去除纯色背景、绿幕/蓝幕背景或 AI 生成背景。
 - 用 Luma 保留发光、火焰、闪电、粒子等亮部特效。
 - 统一帧尺寸，支持自动宽度画布或方形落地/居中画布。
-- 导出 frames 文件夹和自动时间命名的透明 MOV。
+- 对已处理帧执行 MAGIC 二次处理：Real-ESRGAN anime x4 超分后输出原尺寸 1/2、1/4、1/8 三档。
+- 导出 frames 文件夹和自动时间命名的透明 WebM。
 
 项目优先服务 Windows 本地工作流，但运行时很轻：Python、Pillow、ffmpeg，以及原生 HTML/CSS/JavaScript。
 
@@ -36,13 +37,29 @@ Sprite Video Lab 是一个本地网页工具，用来把视频片段、单张图
 - 可直接导入已有动画序列帧，按文件名顺序预览和导出。
 - 实验性线稿清理页：支持 Lanczos 缩小和 Real-ESRGAN anime 整线后缩小。
 - 反向动画预览和反向导出。
-- 帧选择、动画预览、frames 文件夹导出和自动时间命名的透明 MOV 导出。
+- MAGIC 帧预览：对选中帧使用 Real-ESRGAN anime 放大后缩小，支持硬边/软边缩放算法切换，并可上下对比原帧、1/2、1/4、1/8 三档结果。
+- 帧选择、动画预览、frames 文件夹导出和自动时间命名的透明 WebM 导出。
+
+## MAGIC 二次处理
+
+在“检查导出”区域点击 `MAGIC` 后，工具会对当前选中的处理后帧执行一次 Real-ESRGAN anime x4 超分，再派生出三套透明 PNG：
+
+- `MAGIC 1/2`：输出画布为原尺寸的 1/2。
+- `MAGIC 1/4`：输出画布为原尺寸的 1/4。
+- `MAGIC 1/8`：输出画布为原尺寸的 1/8。
+
+MAGIC 按钮旁的 `硬` / `软` 选项决定超分后缩小的算法：
+
+- `硬`：nearest-neighbor 缩小，保留像素硬边缘，适合 Sprite 动画。
+- `软`：BOX 缩小，会平滑边缘，适合需要更柔和抗锯齿的素材。
+
+每个 MAGIC 预览框都有自己的“导出处理后帧”按钮。导出结果会写入 `work/exports/`，并在页面底部生成“打开 frames 文件夹”和透明 WebM 链接。
 
 ## 抠图模式
 
 Sprite Video Lab 目前提供这些背景处理模式：
 
-- `我的绿幕抠图算法`：快速处理受控纯色背景，适合绿幕、蓝幕、白底、灰底等素材。
+- `chroma key`：快速处理受控纯色背景，适合绿幕、蓝幕、白底、灰底等素材。
 - `只用 BiRefNet`：AI 主体抠图，适合非纯色背景或生成图背景。
 - `只用 CorridorKey`：先用绿幕算法生成粗 alpha，再用 CorridorKey 重建边缘和前景颜色。
 - `只用 Luma`：基于亮度生成 alpha，适合亮部特效、火焰、闪电、粒子等素材。
@@ -113,7 +130,7 @@ http://127.0.0.1:8894/app/line-cleaner-experiment.html
 - `SPRITE_VIDEO_LAB_PYTHON`
   - 可选，启动器使用的 Python 可执行文件
 - `SPRITE_VIDEO_LAB_REALESRGAN_BIN`
-  - 可选，Real-ESRGAN anime 线稿清理使用的 `realesrgan-ncnn-vulkan` 可执行文件
+  - 可选，MAGIC 二次处理和 Real-ESRGAN anime 线稿清理使用的 `realesrgan-ncnn-vulkan` 可执行文件
 - `SPRITE_VIDEO_LAB_REALESRGAN_MODEL_DIR`
   - 可选，包含 `realesrgan-x4plus-anime.param` 和 `.bin` 的模型目录
 

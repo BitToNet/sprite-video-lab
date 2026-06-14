@@ -30,6 +30,7 @@ JOBS_DIR = WORK_DIR / "jobs"
 EXPORTS_DIR = WORK_DIR / "exports"
 PREVIEWS_DIR = WORK_DIR / "previews"
 LINE_CLEANER_DIR = WORK_DIR / "line-cleaner"
+MAGIC_DIR = WORK_DIR / "magic"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8894
@@ -42,6 +43,8 @@ REAL_ESRGAN_MODEL_DIR_ENV = "SPRITE_VIDEO_LAB_REALESRGAN_MODEL_DIR"
 AI_MODEL_CACHE_ENV = "SPRITE_VIDEO_LAB_AI_MODEL_CACHE"
 CORRIDORKEY_ROOT_ENV = "SPRITE_VIDEO_LAB_CORRIDORKEY_ROOT"
 LANCZOS = Image.Resampling.LANCZOS
+BOX = Image.Resampling.BOX
+NEAREST = Image.Resampling.NEAREST
 APP_VERSION_POLL_MS = 1200
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".gif"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -122,6 +125,17 @@ CORRIDORKEY_SCREEN_COLORS = {"auto", "green", "blue"}
 CANVAS_MODES = {"auto", "square_bottom", "square_center"}
 LINE_CLEANER_METHODS = {"classic", "realesrgan_anime"}
 REAL_ESRGAN_ANIME_MODEL = "realesrgan-x4plus-anime"
+MAGIC_CROP_PADDING = 24
+MAGIC_VARIANTS = (
+    {"key": "half", "label": "1/2", "scale": 0.5, "dir": "frames"},
+    {"key": "quarter", "label": "1/4", "scale": 0.25, "dir": "frames-quarter"},
+    {"key": "eighth", "label": "1/8", "scale": 0.125, "dir": "frames-eighth"},
+)
+MAGIC_RESIZE_MODE_DEFAULT = "hard"
+MAGIC_RESIZE_MODES = {
+    "hard": {"label": "硬", "resample": NEAREST},
+    "soft": {"label": "软", "resample": BOX},
+}
 
 _FFMPEG_HWACCELS_CACHE: set[str] | None = None
 _BIREFNET_MODEL_CACHE: dict[tuple[str, str], object] = {}
@@ -129,7 +143,7 @@ _CORRIDORKEY_ENGINE_CACHE: dict[tuple[str, str], object] = {}
 
 
 def ensure_runtime_dirs() -> None:
-    for directory in (APP_DIR, WORK_DIR, UPLOADS_DIR, JOBS_DIR, EXPORTS_DIR, PREVIEWS_DIR, LINE_CLEANER_DIR):
+    for directory in (APP_DIR, WORK_DIR, UPLOADS_DIR, JOBS_DIR, EXPORTS_DIR, PREVIEWS_DIR, LINE_CLEANER_DIR, MAGIC_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -2982,27 +2996,100 @@ def resize_to_scale(image: Image.Image, source_size: tuple[int, int], scale: flo
     return rgba.resize((target_width, target_height), LANCZOS)
 
 
-def run_realesrgan_anime(input_path: Path, output_path: Path) -> None:
+def resize_rgba_premultiplied(
+    image: Image.Image,
+    target_size: tuple[int, int],
+    resample: Image.Resampling = LANCZOS,
+) -> Image.Image:
+    return image.convert("RGBA").convert("RGBa").resize(target_size, resample).convert("RGBA")
+
+
+def normalize_magic_resize_mode(value: str | None) -> str:
+    mode = str(value or MAGIC_RESIZE_MODE_DEFAULT).strip().lower()
+    return mode if mode in MAGIC_RESIZE_MODES else MAGIC_RESIZE_MODE_DEFAULT
+
+
+def resize_magic_frame(
+    image: Image.Image,
+    source_size: tuple[int, int],
+    scale: float,
+    resize_mode: str = MAGIC_RESIZE_MODE_DEFAULT,
+) -> Image.Image:
+    source_width, source_height = source_size
+    target_size = (max(1, round(source_width * scale)), max(1, round(source_height * scale)))
+    mode = MAGIC_RESIZE_MODES[normalize_magic_resize_mode(resize_mode)]
+    return resize_rgba_premultiplied(image, target_size, mode["resample"])
+
+
+def expand_bbox(
+    bbox: tuple[int, int, int, int],
+    image_size: tuple[int, int],
+    padding: int,
+) -> tuple[int, int, int, int]:
+    width, height = image_size
+    left, top, right, bottom = bbox
+    return (
+        max(0, left - padding),
+        max(0, top - padding),
+        min(width, right + padding),
+        min(height, bottom + padding),
+    )
+
+
+def build_magic_upscaled_frame(
+    source_rgba: Image.Image,
+    ai_input_path: Path,
+    ai_output_path: Path,
+) -> tuple[Image.Image, tuple[int, int]]:
+    source_rgba = source_rgba.convert("RGBA")
+    source_size = source_rgba.size
+    alpha_bbox = source_rgba.getchannel("A").getbbox()
+    if not alpha_bbox:
+        return Image.new("RGBA", (max(1, source_size[0] * 4), max(1, source_size[1] * 4)), (0, 0, 0, 0)), source_size
+
+    crop_box = expand_bbox(alpha_bbox, source_size, MAGIC_CROP_PADDING)
+    crop_rgba = source_rgba.crop(crop_box)
+    crop_rgba.save(ai_input_path)
+    run_realesrgan_anime(ai_input_path, ai_output_path)
+
+    with Image.open(ai_output_path) as upscaled_image:
+        upscaled_crop = upscaled_image.convert("RGBA")
+    scale_x = max(1, round(upscaled_crop.width / crop_rgba.width))
+    scale_y = max(1, round(upscaled_crop.height / crop_rgba.height))
+
+    upscaled_full_size = (source_size[0] * scale_x, source_size[1] * scale_y)
+    upscaled_full = Image.new("RGBA", upscaled_full_size, (0, 0, 0, 0))
+    upscaled_full.alpha_composite(upscaled_crop, (crop_box[0] * scale_x, crop_box[1] * scale_y))
+    return upscaled_full, source_size
+
+
+def process_magic_frame(source_rgba: Image.Image, ai_input_path: Path, ai_output_path: Path) -> Image.Image:
+    upscaled_full, source_size = build_magic_upscaled_frame(source_rgba, ai_input_path, ai_output_path)
+    return resize_magic_frame(upscaled_full, source_size, 0.5, MAGIC_RESIZE_MODE_DEFAULT)
+
+
+def run_realesrgan_anime(input_path: Path, output_path: Path, output_scale: int | None = None) -> None:
     binary = resolve_realesrgan_binary()
     model_dir = resolve_realesrgan_model_dir(binary)
     if not binary or not model_dir:
         raise RuntimeError(realesrgan_missing_message())
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    run_process(
-        [
-            binary,
-            "-i",
-            str(input_path),
-            "-o",
-            str(output_path),
-            "-n",
-            REAL_ESRGAN_ANIME_MODEL,
-            "-m",
-            str(model_dir),
-            "-f",
-            "png",
-        ]
-    )
+    args = [
+        binary,
+        "-i",
+        str(input_path),
+        "-o",
+        str(output_path),
+        "-n",
+        REAL_ESRGAN_ANIME_MODEL,
+        "-m",
+        str(model_dir),
+        "-f",
+        "png",
+    ]
+    if output_scale:
+        args.extend(["-s", str(output_scale)])
+    run_process(args)
     if not output_path.exists():
         raise RuntimeError("Real-ESRGAN anime did not produce an output image")
 
@@ -3115,7 +3202,7 @@ def process_line_cleaner_frames(
     return manifest
 
 
-def save_alpha_mov(
+def save_alpha_webm(
     frame_paths: list[Path],
     frame_sizes: list[tuple[int, int]],
     output_path: Path,
@@ -3157,14 +3244,224 @@ def save_alpha_mov(
                 "-frames:v",
                 str(len(frame_paths)),
                 "-c:v",
-                "qtrle",
+                "libvpx-vp9",
+                "-lossless",
+                "1",
+                "-auto-alt-ref",
+                "0",
                 "-pix_fmt",
-                "argb",
+                "yuva420p",
+                "-an",
                 str(output_path),
             ]
         )
     finally:
         shutil.rmtree(video_frames_dir, ignore_errors=True)
+
+
+def magic_preview_job(
+    job_id: str,
+    selected_indices: list[int],
+    resize_mode: str = MAGIC_RESIZE_MODE_DEFAULT,
+) -> dict:
+    resize_mode = normalize_magic_resize_mode(resize_mode)
+    resize_mode_label = str(MAGIC_RESIZE_MODES[resize_mode]["label"])
+    manifest = load_job_manifest(job_id)
+    processed_dir = job_dir(job_id) / "processed"
+    frame_map = {entry["index"]: entry for entry in manifest["frames"]}
+    seen_indices: set[int] = set()
+    indices: list[int] = []
+    for index in selected_indices:
+        if index in frame_map and index not in seen_indices:
+            indices.append(index)
+            seen_indices.add(index)
+    if not indices:
+        raise ValueError("no frames selected for MAGIC")
+
+    binary = resolve_realesrgan_binary()
+    if not binary or not resolve_realesrgan_model_dir(binary):
+        raise RuntimeError(realesrgan_missing_message())
+
+    magic_id = timestamped_id()
+    root = MAGIC_DIR / f"{magic_id}-magic"
+    ai_input_dir = root / "ai-input"
+    ai_output_dir = root / "ai-output"
+    variants: dict[str, dict] = {}
+    for variant in MAGIC_VARIANTS:
+        frames_dir = root / str(variant["dir"])
+        variants[str(variant["key"])] = {
+            "key": str(variant["key"]),
+            "label": str(variant["label"]),
+            "scale": float(variant["scale"]),
+            "frames_dir": str(frames_dir),
+            "frame_count": 0,
+            "max_width": 0,
+            "max_height": 0,
+            "bytes": 0,
+            "frames": [],
+        }
+
+    for directory in (ai_input_dir, ai_output_dir, *[Path(variant["frames_dir"]) for variant in variants.values()]):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    for output_index, frame_index in enumerate(indices, start=1):
+        entry = frame_map[frame_index]
+        source_path = processed_dir / entry["name"]
+        frame_name = f"frame_{output_index:03d}.png"
+        ai_input_path = ai_input_dir / frame_name
+        ai_output_path = ai_output_dir / frame_name
+
+        with Image.open(source_path) as image:
+            source_rgba = image.convert("RGBA")
+        upscaled_frame, source_size = build_magic_upscaled_frame(source_rgba, ai_input_path, ai_output_path)
+
+        for variant in variants.values():
+            frames_dir = Path(variant["frames_dir"])
+            processed_path = frames_dir / frame_name
+            magic_frame = resize_magic_frame(
+                upscaled_frame,
+                source_size,
+                float(variant["scale"]),
+                resize_mode,
+            )
+            magic_frame.save(processed_path, optimize=True, compress_level=9)
+            processed_bytes = processed_path.stat().st_size
+            variant["bytes"] += processed_bytes
+            variant["frame_count"] += 1
+            variant["max_width"] = max(int(variant["max_width"]), magic_frame.width)
+            variant["max_height"] = max(int(variant["max_height"]), magic_frame.height)
+            variant["frames"].append(
+                {
+                    "index": output_index - 1,
+                    "source_index": frame_index,
+                    "name": frame_name,
+                    "original_name": entry.get("original_name") or entry.get("name") or frame_name,
+                    "url": f"/work/magic/{root.name}/{frames_dir.name}/{frame_name}",
+                    "width": magic_frame.width,
+                    "height": magic_frame.height,
+                    "bytes": processed_bytes,
+                }
+            )
+            magic_frame.close()
+
+        source_rgba.close()
+        upscaled_frame.close()
+
+    primary = variants["half"]
+
+    result = {
+        "magic_id": magic_id,
+        "job_id": job_id,
+        "model": REAL_ESRGAN_ANIME_MODEL,
+        "upscale": 4,
+        "final_scale": 0.5,
+        "resize_mode": resize_mode,
+        "resize_mode_label": resize_mode_label,
+        "output_dir": str(root),
+        "frames_dir": str(primary["frames_dir"]),
+        "frame_count": int(primary["frame_count"]),
+        "max_width": int(primary["max_width"]),
+        "max_height": int(primary["max_height"]),
+        "bytes": int(primary["bytes"]),
+        "frames": primary["frames"],
+        "variants": variants,
+        "created_at": iso_now(),
+    }
+    (root / "manifest.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
+def load_magic_manifest(magic_id: str) -> dict:
+    magic_id = str(magic_id or "").strip()
+    if not magic_id or Path(magic_id).name != magic_id:
+        raise ValueError("invalid MAGIC id")
+    path = MAGIC_DIR / f"{magic_id}-magic" / "manifest.json"
+    if not path.exists():
+        raise FileNotFoundError(f"MAGIC result not found: {magic_id}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def magic_manifest_variant(manifest: dict, variant_key: str) -> dict:
+    variants = manifest.get("variants") or {}
+    key = variant_key if variant_key in variants else "half"
+    if key in variants:
+        return variants[key]
+    return {
+        "key": "half",
+        "label": "1/2",
+        "frames_dir": manifest.get("frames_dir") or "",
+        "frame_count": manifest.get("frame_count") or 0,
+        "max_width": manifest.get("max_width") or 0,
+        "max_height": manifest.get("max_height") or 0,
+        "frames": manifest.get("frames") or [],
+    }
+
+
+def export_magic_frames(
+    magic_id: str,
+    variant_key: str = "half",
+    video_duration_ms: int = 100,
+) -> dict:
+    manifest = load_magic_manifest(magic_id)
+    variant = magic_manifest_variant(manifest, variant_key)
+    source_dir = Path(str(variant.get("frames_dir") or ""))
+    if not source_dir.is_absolute():
+        source_dir = MAGIC_DIR / f"{manifest['magic_id']}-magic" / str(source_dir)
+    if not source_dir.exists():
+        raise FileNotFoundError(f"MAGIC frames not found: {manifest['magic_id']}")
+
+    variant_key = str(variant.get("key") or "half")
+    target_dir = EXPORTS_DIR / f"{timestamped_id()}-magic-{variant_key}-frames"
+    frames_dir = target_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_count = 0
+    copied_paths: list[Path] = []
+    for output_index, entry in enumerate(variant.get("frames") or [], start=1):
+        source_path = source_dir / str(entry.get("name") or "")
+        if not source_path.exists():
+            continue
+        target_path = frames_dir / f"frame_{output_index:03d}.png"
+        shutil.copy2(source_path, target_path)
+        copied_count += 1
+        copied_paths.append(target_path)
+
+    if copied_count <= 0:
+        raise ValueError("no MAGIC frames exported")
+
+    cell_width = 0
+    cell_height = 0
+    frame_sizes: list[tuple[int, int]] = []
+    for frame_path in copied_paths:
+        frame = open_rgba_image(frame_path)
+        frame_sizes.append(frame.size)
+        cell_width = max(cell_width, frame.size[0])
+        cell_height = max(cell_height, frame.size[1])
+        frame.close()
+
+    video_duration_ms = clamp_int(video_duration_ms, 20, 5000)
+    video_name = f"magic-{variant_key}-{datetime.now():%Y%m%d-%H%M%S}.webm"
+    video_path = target_dir / video_name
+    save_alpha_webm(copied_paths, frame_sizes, video_path, cell_width, cell_height, video_duration_ms)
+
+    result = {
+        "output_dir": str(target_dir),
+        "frames_dir": str(frames_dir),
+        "video_name": video_name,
+        "video_url": f"/work/exports/{target_dir.name}/{video_name}",
+        "frame_count": copied_count,
+        "max_width": variant.get("max_width") or 0,
+        "max_height": variant.get("max_height") or 0,
+        "video_duration_ms": video_duration_ms,
+        "source_magic_id": manifest.get("magic_id") or magic_id,
+        "variant_key": variant_key,
+        "variant_label": variant.get("label") or "1/2",
+        "resize_mode": manifest.get("resize_mode") or MAGIC_RESIZE_MODE_DEFAULT,
+        "resize_mode_label": manifest.get("resize_mode_label") or MAGIC_RESIZE_MODES[MAGIC_RESIZE_MODE_DEFAULT]["label"],
+        "created_at": iso_now(),
+    }
+    (target_dir / "export.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
 
 
 def export_job(job_id: str, selected_indices: list[int], video_duration_ms: int) -> dict:
@@ -3203,9 +3500,9 @@ def export_job(job_id: str, selected_indices: list[int], video_duration_ms: int)
         frame.close()
 
     video_duration_ms = clamp_int(video_duration_ms, 20, 5000)
-    video_name = f"animation-{datetime.now():%Y%m%d-%H%M%S}.mov"
+    video_name = f"animation-{datetime.now():%Y%m%d-%H%M%S}.webm"
     video_path = target_dir / video_name
-    save_alpha_mov(copied_paths, frame_sizes, video_path, cell_width, cell_height, video_duration_ms)
+    save_alpha_webm(copied_paths, frame_sizes, video_path, cell_width, cell_height, video_duration_ms)
 
     return {
         "output_dir": str(target_dir),
@@ -3440,6 +3737,24 @@ class AppHandler(BaseHTTPRequestHandler):
                 result = export_job(
                     job_id=str(payload.get("job_id") or ""),
                     selected_indices=[safe_int(value, -1) for value in (payload.get("selected_indices") or [])],
+                    video_duration_ms=safe_int(payload.get("video_duration_ms"), 100),
+                )
+                self.send_json({"ok": True, "export": result})
+                return
+            if parsed.path == "/api/magic-preview":
+                payload = self.read_json_body()
+                result = magic_preview_job(
+                    job_id=str(payload.get("job_id") or ""),
+                    selected_indices=[safe_int(value, -1) for value in (payload.get("selected_indices") or [])],
+                    resize_mode=str(payload.get("resize_mode") or MAGIC_RESIZE_MODE_DEFAULT),
+                )
+                self.send_json({"ok": True, "magic": result})
+                return
+            if parsed.path == "/api/export-magic-frames":
+                payload = self.read_json_body()
+                result = export_magic_frames(
+                    str(payload.get("magic_id") or ""),
+                    variant_key=str(payload.get("variant_key") or "half"),
                     video_duration_ms=safe_int(payload.get("video_duration_ms"), 100),
                 )
                 self.send_json({"ok": True, "export": result})

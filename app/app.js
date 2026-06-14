@@ -16,6 +16,8 @@ const state = {
     imageCache: new Map(),
     background: "#F6FBF6",
   },
+  magicPreview: null,
+  magicResizeMode: "hard",
   processPreviewZoom: {
     source: 100,
     processed: 100,
@@ -46,6 +48,51 @@ const AI_DEVICE_AUTO = "auto";
 const OUTPUT_SCALE_MIN_PERCENT = 5;
 const OUTPUT_SCALE_MAX_PERCENT = 200;
 const OUTPUT_SCALE_DEFAULT_PERCENT = 100;
+const MAGIC_VARIANT_CONFIGS = [
+  {
+    key: "half",
+    label: "MAGIC 1/2",
+    panelId: "magicPreviewPanel",
+    canvasId: "magicPreviewCanvas",
+    emptyId: "magicPreviewEmptyState",
+    frameLabelId: "magicPreviewFrameLabel",
+    countId: "magicPreviewSelectedCount",
+    progressFillId: "magicPreviewProgressFill",
+    progressLabelId: "magicPreviewProgressLabel",
+    sizeLabelId: "magicOutputSizeLabel",
+    exportButtonId: "exportMagicFramesButton",
+  },
+  {
+    key: "quarter",
+    label: "MAGIC 1/4",
+    panelId: "magicQuarterPreviewPanel",
+    canvasId: "magicQuarterPreviewCanvas",
+    emptyId: "magicQuarterPreviewEmptyState",
+    frameLabelId: "magicQuarterPreviewFrameLabel",
+    countId: "magicQuarterPreviewSelectedCount",
+    progressFillId: "magicQuarterPreviewProgressFill",
+    progressLabelId: "magicQuarterPreviewProgressLabel",
+    sizeLabelId: "magicQuarterOutputSizeLabel",
+    exportButtonId: "exportMagicQuarterFramesButton",
+  },
+  {
+    key: "eighth",
+    label: "MAGIC 1/8",
+    panelId: "magicEighthPreviewPanel",
+    canvasId: "magicEighthPreviewCanvas",
+    emptyId: "magicEighthPreviewEmptyState",
+    frameLabelId: "magicEighthPreviewFrameLabel",
+    countId: "magicEighthPreviewSelectedCount",
+    progressFillId: "magicEighthPreviewProgressFill",
+    progressLabelId: "magicEighthPreviewProgressLabel",
+    sizeLabelId: "magicEighthOutputSizeLabel",
+    exportButtonId: "exportMagicEighthFramesButton",
+  },
+];
+const MAGIC_RESIZE_MODE_LABELS = {
+  hard: "硬",
+  soft: "软",
+};
 let hotReloadVersion = null;
 let hotReloadTimerId = null;
 let uploadDragDepth = 0;
@@ -87,6 +134,7 @@ function bindElements() {
     "mediaPreviewImage",
     "videoProgress",
     "videoProgressFill",
+    "videoProgressLabel",
     "videoToolbar",
     "currentTimeLabel",
     "startRange",
@@ -180,6 +228,36 @@ function bindElements() {
     "previewBackgroundInput",
     "previewBackgroundLabel",
     "previewIntervalInput",
+    "magicPreviewPanel",
+    "magicPreviewCanvas",
+    "magicPreviewEmptyState",
+    "magicPreviewFrameLabel",
+    "magicPreviewSelectedCount",
+    "magicPreviewProgressBar",
+    "magicPreviewProgressFill",
+    "magicPreviewProgressLabel",
+    "magicOutputSizeLabel",
+    "exportMagicFramesButton",
+    "magicQuarterPreviewPanel",
+    "magicQuarterPreviewCanvas",
+    "magicQuarterPreviewEmptyState",
+    "magicQuarterPreviewFrameLabel",
+    "magicQuarterPreviewSelectedCount",
+    "magicQuarterPreviewProgressBar",
+    "magicQuarterPreviewProgressFill",
+    "magicQuarterPreviewProgressLabel",
+    "magicQuarterOutputSizeLabel",
+    "exportMagicQuarterFramesButton",
+    "magicEighthPreviewPanel",
+    "magicEighthPreviewCanvas",
+    "magicEighthPreviewEmptyState",
+    "magicEighthPreviewFrameLabel",
+    "magicEighthPreviewSelectedCount",
+    "magicEighthPreviewProgressBar",
+    "magicEighthPreviewProgressFill",
+    "magicEighthPreviewProgressLabel",
+    "magicEighthOutputSizeLabel",
+    "exportMagicEighthFramesButton",
     "frameGrid",
     "selectAllButton",
     "selectNoneButton",
@@ -187,11 +265,37 @@ function bindElements() {
     "selectEvenButton",
     "invertSelectionButton",
     "exportButton",
+    "magicResizeHardInput",
+    "magicResizeSoftInput",
+    "magicButton",
     "exportResult",
     "appStatus",
   ].forEach((id) => {
     els[id] = document.getElementById(id);
   });
+}
+
+function normalizeMagicResizeMode(mode) {
+  return mode === "soft" ? "soft" : "hard";
+}
+
+function magicResizeModeLabel(mode = state.magicResizeMode) {
+  return MAGIC_RESIZE_MODE_LABELS[normalizeMagicResizeMode(mode)];
+}
+
+function setMagicResizeMode(mode, { clearExisting = true } = {}) {
+  const normalized = normalizeMagicResizeMode(mode);
+  const changed = state.magicResizeMode !== normalized;
+  state.magicResizeMode = normalized;
+  if (els.magicResizeHardInput) {
+    els.magicResizeHardInput.checked = normalized === "hard";
+  }
+  if (els.magicResizeSoftInput) {
+    els.magicResizeSoftInput.checked = normalized === "soft";
+  }
+  if (changed && clearExisting) {
+    clearMagicPreview();
+  }
 }
 
 function bindEvents() {
@@ -205,6 +309,17 @@ function bindEvents() {
   els.savePreviewButton.addEventListener("click", downloadProcessPreviewResult);
   els.processButton.addEventListener("click", processVideo);
   els.exportButton.addEventListener("click", exportFrames);
+  els.magicButton.addEventListener("click", runMagicPreview);
+  els.magicResizeHardInput.addEventListener("change", () => {
+    setMagicResizeMode(els.magicResizeHardInput.checked ? "hard" : "soft");
+  });
+  els.magicResizeSoftInput.addEventListener("change", () => {
+    setMagicResizeMode(els.magicResizeSoftInput.checked ? "soft" : "hard");
+  });
+  setMagicResizeMode(state.magicResizeMode, { clearExisting: false });
+  els.exportMagicFramesButton.addEventListener("click", () => exportMagicFrames("half", els.exportMagicFramesButton));
+  els.exportMagicQuarterFramesButton.addEventListener("click", () => exportMagicFrames("quarter", els.exportMagicQuarterFramesButton));
+  els.exportMagicEighthFramesButton.addEventListener("click", () => exportMagicFrames("eighth", els.exportMagicEighthFramesButton));
   document.querySelectorAll("[data-luma-preset]").forEach((button) => {
     button.addEventListener("click", () => applyLumaPreset(button.dataset.lumaPreset));
   });
@@ -255,6 +370,7 @@ function bindEvents() {
     } else {
       state.selected.delete(index);
     }
+    clearMagicPreview();
     refreshCardSelection(index, target.checked);
     renderSelectionCount();
     syncAnimationPreview();
@@ -266,6 +382,7 @@ function bindEvents() {
   els.selectNoneButton.addEventListener("click", () => {
     state.selected = new Set();
     state.preview.currentIndex = 0;
+    clearMagicPreview();
     renderFrames();
   });
   els.selectOddButton.addEventListener("click", () => selectFrames((frame) => (frame.index + 1) % 2 === 1));
@@ -280,6 +397,7 @@ function bindEvents() {
     });
     state.selected = next;
     state.preview.currentIndex = 0;
+    clearMagicPreview();
     renderFrames();
   });
   els.clearPreviewFramesButton.addEventListener("click", clearPreviewFrames);
@@ -1342,6 +1460,7 @@ async function importCustomAnimationFrames(files, button) {
     state.processPreview = null;
     state.job = data.job;
     state.exportResult = null;
+    clearMagicPreview();
     state.selected = new Set(data.job.frames.map((frame) => frame.index));
     state.preview.currentIndex = 0;
     state.preview.isPlaying = true;
@@ -1360,6 +1479,7 @@ function clearPreviewFrames() {
   resetPreviewState();
   state.job = null;
   state.exportResult = null;
+  clearMagicPreview();
   state.selected = new Set();
   els.jobSummary.innerHTML = "";
   els.frameGrid.innerHTML = "";
@@ -1391,6 +1511,7 @@ function syncResultActions() {
   const hasSelection = hasJob && state.selected.size > 0;
   els.openProcessedButton.disabled = !hasJob || !state.job?.processed_dir;
   els.exportButton.disabled = !hasSelection;
+  els.magicButton.disabled = !hasSelection;
   els.selectAllButton.disabled = !hasJob;
   els.selectNoneButton.disabled = !hasJob;
   els.selectOddButton.disabled = !hasJob;
@@ -1409,6 +1530,7 @@ function applyUpload(upload, { resetSizing = true } = {}) {
   state.job = null;
   state.exportResult = null;
   state.processPreview = null;
+  clearMagicPreview();
   state.selected = new Set();
   if (resetSizing) {
     resetSizingControlsForNewUpload();
@@ -1662,8 +1784,19 @@ function updateVideoProgress(currentTime = 0) {
     return;
   }
 
+  const setProgress = (percent) => {
+    const progress = clamp(Number(percent || 0), 0, 100);
+    els.videoProgressFill.style.setProperty("--progress", `${progress * 3.6}deg`);
+    if (els.videoProgressLabel) {
+      els.videoProgressLabel.textContent = `${Math.round(progress)}%`;
+    }
+    if (els.videoProgress) {
+      els.videoProgress.setAttribute("aria-valuenow", String(Math.round(progress)));
+    }
+  };
+
   if (!state.upload || !isVideoUpload()) {
-    els.videoProgressFill.style.width = "0%";
+    setProgress(0);
     return;
   }
 
@@ -1673,7 +1806,7 @@ function updateVideoProgress(currentTime = 0) {
   const segmentLength = Math.max(segmentEnd - segmentStart, 0.01);
   const normalizedCurrent = clamp(Number(currentTime || 0), segmentStart, segmentEnd);
   const progress = ((normalizedCurrent - segmentStart) / segmentLength) * 100;
-  els.videoProgressFill.style.width = `${clamp(progress, 0, 100)}%`;
+  setProgress(progress);
 }
 
 function renderSegmentControls() {
@@ -1781,6 +1914,7 @@ async function processVideo() {
     });
     state.job = data.job;
     state.exportResult = null;
+    clearMagicPreview();
     state.selected = new Set(data.job.frames.map((frame) => frame.index));
     state.preview.currentIndex = 0;
     renderJob();
@@ -2119,6 +2253,7 @@ function selectFrames(predicate) {
   if (!state.job) return;
   state.selected = new Set(state.job.frames.filter(predicate).map((frame) => frame.index));
   state.preview.currentIndex = 0;
+  clearMagicPreview();
   renderFrames();
 }
 
@@ -2315,10 +2450,16 @@ function updateProcessPreviewBackground(mode, color, shouldPersist = false) {
 
 function setPreviewStageBackground(color) {
   const normalized = normalizeHexColor(color, state.preview.background);
-  const stage = els.animationPreviewCanvas?.closest(".animation-stage");
-  if (stage) {
+  [
+    els.animationPreviewCanvas,
+    ...MAGIC_VARIANT_CONFIGS.map((config) => els[config.canvasId]),
+  ].forEach((canvas) => {
+    const stage = canvas?.closest(".animation-stage");
+    if (!stage) {
+      return;
+    }
     stage.style.setProperty("--preview-bg-color", normalized);
-  }
+  });
 }
 
 function updatePreviewBackground(color, shouldPersist = false) {
@@ -2487,6 +2628,22 @@ function warmPreviewFrames(frames) {
   return Promise.all(frames.map((frame) => loadPreviewImage(frame.url)));
 }
 
+function paintFrameOnCanvas(canvas, image) {
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = state.preview.background;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.imageSmoothingEnabled = false;
+
+  const baseScale = Math.min(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
+  const scale = baseScale;
+  const drawWidth = image.naturalWidth * scale;
+  const drawHeight = image.naturalHeight * scale;
+  const drawX = Math.round((canvas.width - drawWidth) / 2);
+  const drawY = Math.round((canvas.height - drawHeight) / 2);
+  ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+}
+
 function drawPreviewPlaceholder() {
   const canvas = els.animationPreviewCanvas;
   const ctx = canvas.getContext("2d");
@@ -2495,27 +2652,180 @@ function drawPreviewPlaceholder() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   els.previewEmptyState.hidden = false;
   els.previewFrameLabel.textContent = "\u5F53\u524D -";
+  if (state.magicPreview) {
+    drawMagicPlaceholder();
+  }
 }
 
 function renderPreviewFrameImage(image, frame, selectedCount) {
   const canvas = els.animationPreviewCanvas;
+  paintFrameOnCanvas(canvas, image);
+  els.previewEmptyState.hidden = true;
+  els.previewFrameLabel.textContent = `\u5F53\u524D #${String(frame.index + 1).padStart(3, "0")}`;
+  updatePreviewControls(selectedCount);
+  syncMagicPreviewFrame(frame, selectedCount);
+}
+
+function magicVariantElements(config) {
+  return {
+    panel: els[config.panelId],
+    canvas: els[config.canvasId],
+    empty: els[config.emptyId],
+    frameLabel: els[config.frameLabelId],
+    count: els[config.countId],
+    progressFill: els[config.progressFillId],
+    progressLabel: els[config.progressLabelId],
+    sizeLabel: els[config.sizeLabelId],
+    exportButton: els[config.exportButtonId],
+  };
+}
+
+function magicVariantData(key) {
+  if (!state.magicPreview) {
+    return null;
+  }
+  if (state.magicPreview.variants?.[key]) {
+    return state.magicPreview.variants[key];
+  }
+  return key === "half" ? state.magicPreview : null;
+}
+
+function drawMagicVariantPlaceholder(config, message = "\u7B49\u5F85 MAGIC") {
+  const ui = magicVariantElements(config);
+  if (!ui.canvas) {
+    return;
+  }
+  const variant = magicVariantData(config.key);
+  const canvas = ui.canvas;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = state.preview.background;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.imageSmoothingEnabled = false;
+  ui.empty.textContent = message;
+  ui.empty.hidden = false;
+  ui.frameLabel.textContent = `${config.label} -`;
+  ui.count.textContent = variant
+    ? `\u5DF2\u751F\u6210 ${variant.frame_count || 0} \u5E27`
+    : "\u5DF2\u751F\u6210 0 \u5E27";
+  ui.progressFill.style.width = "0%";
+  ui.progressLabel.textContent = "0 / 0";
+  ui.sizeLabel.textContent = formatMagicOutputSize(variant);
+  ui.exportButton.disabled = !variant?.frames?.length;
+}
 
-  const baseScale = Math.min(canvas.width / image.naturalWidth, canvas.height / image.naturalHeight);
-  const scale = baseScale >= 1 ? Math.max(1, Math.floor(baseScale)) : baseScale;
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  const drawX = Math.round((canvas.width - drawWidth) / 2);
-  const drawY = Math.round((canvas.height - drawHeight) / 2);
-  ctx.drawImage(image, drawX, drawY, drawWidth, drawHeight);
+function drawMagicPlaceholder(message = "\u7B49\u5F85 MAGIC") {
+  MAGIC_VARIANT_CONFIGS.forEach((config) => drawMagicVariantPlaceholder(config, message));
+}
 
-  els.previewEmptyState.hidden = true;
-  els.previewFrameLabel.textContent = `\u5F53\u524D #${String(frame.index + 1).padStart(3, "0")}`;
-  updatePreviewControls(selectedCount);
+function updateMagicVariantControls(config, selectedCount) {
+  const ui = magicVariantElements(config);
+  const variant = magicVariantData(config.key);
+  const hasFrames = selectedCount > 0;
+  const currentIndex = hasFrames ? Math.min(state.preview.currentIndex, selectedCount - 1) : 0;
+  const progressPercent = hasFrames ? ((currentIndex + 1) / selectedCount) * 100 : 0;
+  ui.progressFill.style.width = `${progressPercent}%`;
+  ui.progressLabel.textContent = hasFrames
+    ? `${currentIndex + 1} / ${selectedCount}`
+    : "0 / 0";
+  ui.count.textContent = `\u5DF2\u751F\u6210 ${variant?.frame_count || 0} \u5E27`;
+  ui.sizeLabel.textContent = formatMagicOutputSize(variant);
+  ui.exportButton.disabled = !variant?.frames?.length;
+}
+
+function updateMagicPreviewControls(selectedCount) {
+  MAGIC_VARIANT_CONFIGS.forEach((config) => updateMagicVariantControls(config, selectedCount));
+}
+
+function formatMagicOutputSize(magicPreview) {
+  const width = Number(magicPreview?.max_width || magicPreview?.frames?.[0]?.width || 0);
+  const height = Number(magicPreview?.max_height || magicPreview?.frames?.[0]?.height || 0);
+  return width > 0 && height > 0 ? `${width} \u00d7 ${height}` : "-";
+}
+
+function magicFrameForSourceFrame(sourceFrame, variantKey = "half") {
+  const variant = magicVariantData(variantKey);
+  if (!variant?.frames || !sourceFrame) {
+    return null;
+  }
+  return variant.frames.find((frame) => Number(frame.source_index) === Number(sourceFrame.index)) || null;
+}
+
+function renderMagicPreviewFrameImage(config, image, magicFrame, selectedCount) {
+  const ui = magicVariantElements(config);
+  paintFrameOnCanvas(ui.canvas, image);
+  ui.empty.hidden = true;
+  ui.frameLabel.textContent = `${config.label} #${String(Number(magicFrame.source_index || 0) + 1).padStart(3, "0")}`;
+  updateMagicVariantControls(config, selectedCount);
+}
+
+async function syncMagicVariantPreviewFrame(config, sourceFrame, selectedCount) {
+  const ui = magicVariantElements(config);
+  const variant = magicVariantData(config.key);
+  if (!variant?.frames?.length || !ui.panel || ui.panel.hidden) {
+    return;
+  }
+
+  const magicFrame = magicFrameForSourceFrame(sourceFrame, config.key);
+  if (!magicFrame) {
+    drawMagicVariantPlaceholder(config, "\u8FD9\u4E00\u5E27\u9700\u8981\u91CD\u65B0 MAGIC");
+    updateMagicVariantControls(config, selectedCount);
+    return;
+  }
+
+  state.magicPreview.renderTokens = state.magicPreview.renderTokens || {};
+  const token = Number(state.magicPreview.renderTokens[config.key] || 0) + 1;
+  state.magicPreview.renderTokens[config.key] = token;
+  const cached = getCachedPreviewImage(magicFrame.url);
+  if (cached) {
+    renderMagicPreviewFrameImage(config, cached, magicFrame, selectedCount);
+    return;
+  }
+
+  try {
+    const image = await loadPreviewImage(magicFrame.url);
+    if (token !== state.magicPreview?.renderTokens?.[config.key]) {
+      return;
+    }
+    renderMagicPreviewFrameImage(config, image, magicFrame, selectedCount);
+  } catch (error) {
+    drawMagicVariantPlaceholder(config, "\u52A0\u8F7D MAGIC \u5931\u8D25");
+    setStatus(error.message || String(error), "error");
+  }
+}
+
+function syncMagicPreviewFrame(sourceFrame, selectedCount) {
+  MAGIC_VARIANT_CONFIGS.forEach((config) => {
+    void syncMagicVariantPreviewFrame(config, sourceFrame, selectedCount);
+  });
+}
+
+function showMagicPreview() {
+  if (!state.magicPreview?.frames?.length && !state.magicPreview?.variants?.half?.frames?.length) {
+    clearMagicPreview();
+    return;
+  }
+  MAGIC_VARIANT_CONFIGS.forEach((config) => {
+    const ui = magicVariantElements(config);
+    const variant = magicVariantData(config.key);
+    ui.panel.hidden = !variant?.frames?.length;
+    drawMagicVariantPlaceholder(config);
+    updateMagicVariantControls(config, getSelectedFrames().length);
+    if (variant?.frames?.length) {
+      void warmPreviewFrames(variant.frames);
+    }
+  });
+  syncAnimationPreview(false);
+}
+
+function clearMagicPreview() {
+  state.magicPreview = null;
+  MAGIC_VARIANT_CONFIGS.forEach((config) => {
+    const ui = magicVariantElements(config);
+    if (ui.panel) {
+      ui.panel.hidden = true;
+    }
+  });
+  drawMagicPlaceholder();
 }
 
 async function drawPreviewFrame(frame, selectedCount) {
@@ -2579,6 +2889,67 @@ function syncAnimationPreview(shouldRestartTimer = true) {
   }
 }
 
+async function runMagicPreview() {
+  if (!state.job) {
+    setStatus("\u8FD8\u6CA1\u6709\u53EF\u4EE5 MAGIC \u7684\u5904\u7406\u7ED3\u679C\u3002", "error");
+    return;
+  }
+  if (state.selected.size === 0) {
+    setStatus("\u81F3\u5C11\u9009\u4E00\u5E27\u518D\u70B9 MAGIC\u3002", "error");
+    syncResultActions();
+    return;
+  }
+
+  await withBusy(els.magicButton, async () => {
+    const selectedFrames = getSelectedFrames();
+    const resizeMode = normalizeMagicResizeMode(state.magicResizeMode);
+    const resizeModeLabel = magicResizeModeLabel(resizeMode);
+    clearMagicPreview();
+    setStatus(`MAGIC \u6B63\u5728\u5904\u7406 ${selectedFrames.length} \u5E27\uFF1AReal-ESRGAN \u8D85\u5206\u540E${resizeModeLabel}\u7F29\u5C0F\u5230 1/2\u30011/4\u30011/8...`);
+    const data = await apiJson("/api/magic-preview", {
+      method: "POST",
+      body: {
+        job_id: state.job.job_id,
+        selected_indices: selectedFrames.map((frame) => frame.index),
+        resize_mode: resizeMode,
+      },
+    });
+    state.magicPreview = data.magic;
+    showMagicPreview();
+    setStatus(`MAGIC \u5B8C\u6210\uFF0C${data.magic.resize_mode_label || resizeModeLabel}\u7F29\u5C0F\uFF0C\u5DF2\u751F\u6210 ${data.magic.frame_count} \u5E27 1/2\u30011/4\u30011/8 \u5C3A\u5BF8\u5BF9\u6BD4\u9884\u89C8\u3002`, "success");
+  });
+}
+
+async function exportMagicFrames(variantKey = "half", button = els.exportMagicFramesButton) {
+  if (!state.magicPreview?.magic_id) {
+    setStatus("\u5148\u70B9 MAGIC \u751F\u6210\u5904\u7406\u540E\u5E27\uFF0C\u518D\u5BFC\u51FA\u3002", "error");
+    return;
+  }
+  const config = MAGIC_VARIANT_CONFIGS.find((item) => item.key === variantKey) || MAGIC_VARIANT_CONFIGS[0];
+  const variant = magicVariantData(config.key);
+  if (!variant?.frames?.length) {
+    setStatus(`${config.label} \u8FD8\u6CA1\u6709\u53EF\u5BFC\u51FA\u7684\u5E27\u3002`, "error");
+    return;
+  }
+
+  await withBusy(button, async () => {
+    setStatus(`\u6B63\u5728\u5BFC\u51FA ${config.label} \u5904\u7406\u540E\u5E27...`);
+    const data = await apiJson("/api/export-magic-frames", {
+      method: "POST",
+      body: {
+        magic_id: state.magicPreview.magic_id,
+        variant_key: config.key,
+        video_duration_ms: Number(els.previewIntervalInput.value || 100),
+      },
+    });
+    state.exportResult = data.export;
+    renderExportResult();
+    const frameCount = Number(data.export?.frame_count || 0);
+    const outputSize = formatMagicOutputSize(data.export);
+    setStatus(`${config.label} \u5904\u7406\u540E\u5E27\u5DF2\u5BFC\u51FA\uFF1A${frameCount} \u5E27\uFF0C\u753B\u5E03 ${outputSize}\uFF0C\u5DF2\u751F\u6210\u900F\u660E WebM\u3002`, "success");
+  });
+}
+
 async function exportFrames() {
   if (!state.job) {
     setStatus("\u8fd8\u6ca1\u6709\u53ef\u5bfc\u51fa\u7684\u5904\u7406\u7ed3\u679c\u3002", "error");
@@ -2615,7 +2986,7 @@ function renderExportResult() {
   }
 
   els.exportResult.hidden = false;
-  const videoName = escapeHtml(state.exportResult.video_name || "animation.mov");
+  const videoName = escapeHtml(state.exportResult.video_name || "animation.webm");
   const videoLink = state.exportResult.video_url
     ? `<a href="${state.exportResult.video_url}" target="_blank" rel="noopener">${videoName}</a>`
     : "";
@@ -2623,7 +2994,7 @@ function renderExportResult() {
   els.exportResult.innerHTML = `
     <div class="result-summary">
       ${summaryCard("\u5bfc\u51fa\u5e27\u6570", `${state.exportResult.frame_count} \u5e27`)}
-      ${summaryCard("\u5bfc\u51fa\u5185\u5bb9", "frames \u6587\u4ef6\u5939 / \u900f\u660e MOV")}
+      ${summaryCard("\u5bfc\u51fa\u5185\u5bb9", "frames \u6587\u4ef6\u5939 / \u900f\u660e WebM")}
     </div>
     <div class="link-list">
       <button id="openFramesDirButton" class="ghost-button" type="button">\u6253\u5f00 frames \u6587\u4ef6\u5939</button>

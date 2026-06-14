@@ -110,12 +110,6 @@
             <div class="video-wrap">
               <video id="videoPreview" playsinline muted></video>
               <img id="mediaPreviewImage" alt="源图预览" hidden>
-              <div id="videoProgress" class="video-progress" aria-hidden="true">
-                <div id="videoProgressFill" class="video-progress-fill"></div>
-              </div>
-              <div id="videoToolbar" class="video-toolbar">
-                <span>选区循环 / 自动静音</span>
-              </div>
             </div>
 
             <div class="segment-panel">
@@ -155,6 +149,14 @@
               <div class="segment-confirm-bar">
                 <span id="segmentConfirmStatus" class="segment-status confirmed">区间实时生效</span>
                 <small id="segmentConfirmHint">调整起止帧后，预览和处理都会使用当前区间。</small>
+              </div>
+
+              <div id="videoProgress" class="video-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="videoProgressFill" class="video-progress-fill"></div>
+                <div id="videoToolbar" class="video-toolbar">
+                  <span>选区循环 / 自动静音</span>
+                  <strong id="videoProgressLabel">0%</strong>
+                </div>
               </div>
             </div>
           </div>
@@ -227,7 +229,7 @@
                     <label class="field">
                       <span>抠图算法</span>
                       <select id="matteModeInput">
-                        <option value="chroma">我的绿幕抠图算法</option>
+                        <option value="chroma">chroma key</option>
                         <option value="birefnet">只用 BiRefNet</option>
                         <option value="corridorkey">只用 CorridorKey</option>
                         <option value="luma">只用 Luma</option>
@@ -249,7 +251,7 @@
                       </summary>
                       <dl>
                         <div>
-                          <dt>我的绿幕抠图算法</dt>
+                          <dt>chroma key</dt>
                           <dd>最快。适合绿幕、蓝幕、白底、灰底等受控纯色背景。</dd>
                         </div>
                         <div>
@@ -556,6 +558,60 @@
                   <input id="previewIntervalInput" type="number" min="20" max="5000" step="10" value="100">
                 </label>
               </div>
+              <div id="magicPreviewPanel" class="magic-preview-panel" hidden>
+                <div class="animation-stage magic-stage">
+                  <canvas id="magicPreviewCanvas" width="512" height="512"></canvas>
+                  <div id="magicPreviewEmptyState" class="empty-state">等待 MAGIC</div>
+                </div>
+                <div class="preview-status">
+                  <strong id="magicPreviewFrameLabel">MAGIC -</strong>
+                  <span id="magicPreviewSelectedCount">已生成 0 帧</span>
+                </div>
+                <div id="magicPreviewProgressBar" class="preview-progress magic-progress">
+                  <div id="magicPreviewProgressFill"></div>
+                </div>
+                <span id="magicPreviewProgressLabel" class="progress-label">0 / 0</span>
+                <div class="magic-output-row">
+                  <span>输出画布 <strong id="magicOutputSizeLabel">-</strong></span>
+                  <button id="exportMagicFramesButton" class="ghost-button tiny" type="button" disabled>导出处理后帧</button>
+                </div>
+              </div>
+              <div id="magicQuarterPreviewPanel" class="magic-preview-panel" hidden>
+                <div class="animation-stage magic-stage">
+                  <canvas id="magicQuarterPreviewCanvas" width="512" height="512"></canvas>
+                  <div id="magicQuarterPreviewEmptyState" class="empty-state">等待 MAGIC 1/4</div>
+                </div>
+                <div class="preview-status">
+                  <strong id="magicQuarterPreviewFrameLabel">MAGIC 1/4 -</strong>
+                  <span id="magicQuarterPreviewSelectedCount">已生成 0 帧</span>
+                </div>
+                <div id="magicQuarterPreviewProgressBar" class="preview-progress magic-progress">
+                  <div id="magicQuarterPreviewProgressFill"></div>
+                </div>
+                <span id="magicQuarterPreviewProgressLabel" class="progress-label">0 / 0</span>
+                <div class="magic-output-row">
+                  <span>输出画布 <strong id="magicQuarterOutputSizeLabel">-</strong></span>
+                  <button id="exportMagicQuarterFramesButton" class="ghost-button tiny" type="button" disabled>导出处理后帧</button>
+                </div>
+              </div>
+              <div id="magicEighthPreviewPanel" class="magic-preview-panel" hidden>
+                <div class="animation-stage magic-stage">
+                  <canvas id="magicEighthPreviewCanvas" width="512" height="512"></canvas>
+                  <div id="magicEighthPreviewEmptyState" class="empty-state">等待 MAGIC 1/8</div>
+                </div>
+                <div class="preview-status">
+                  <strong id="magicEighthPreviewFrameLabel">MAGIC 1/8 -</strong>
+                  <span id="magicEighthPreviewSelectedCount">已生成 0 帧</span>
+                </div>
+                <div id="magicEighthPreviewProgressBar" class="preview-progress magic-progress">
+                  <div id="magicEighthPreviewProgressFill"></div>
+                </div>
+                <span id="magicEighthPreviewProgressLabel" class="progress-label">0 / 0</span>
+                <div class="magic-output-row">
+                  <span>输出画布 <strong id="magicEighthOutputSizeLabel">-</strong></span>
+                  <button id="exportMagicEighthFramesButton" class="ghost-button tiny" type="button" disabled>导出处理后帧</button>
+                </div>
+              </div>
             </aside>
 
             <div class="frames-panel">
@@ -576,6 +632,17 @@
 
           <div class="export-bar">
             <button id="exportButton" class="primary-button large" type="button">导出选中帧</button>
+            <div class="magic-resize-mode" role="group" aria-label="MAGIC 缩放算法">
+              <label class="magic-resize-option">
+                <input id="magicResizeHardInput" type="checkbox" value="hard" checked>
+                <span>硬</span>
+              </label>
+              <label class="magic-resize-option">
+                <input id="magicResizeSoftInput" type="checkbox" value="soft">
+                <span>软</span>
+              </label>
+            </div>
+            <button id="magicButton" class="magic-button large" type="button">MAGIC</button>
           </div>
           <div id="exportResult" class="export-result" hidden></div>
         </section>

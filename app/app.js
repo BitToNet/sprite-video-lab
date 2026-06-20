@@ -1355,6 +1355,9 @@ function formatMatteDetail(matte) {
   if (matte.resolution) {
     parts.push(matteModeUsesBiRefNet(matte.mode) ? `AI ${matte.resolution}px` : `${matte.resolution}px`);
   }
+  if (matte.solid_key_fallback && matte.solid_key_color) {
+    parts.push(`\u8272\u952e\u515c\u5e95 ${matte.solid_key_color}`);
+  }
   if (matte.corridorkey_enabled) {
     const screen = formatCorridorScreenLabel(matte.corridorkey_screen_color);
     const device = matte.corridorkey_device ? ` / ${matte.corridorkey_device}` : "";

@@ -410,8 +410,9 @@ def is_auto_ai_resolution(value) -> bool:
 
 def auto_ai_resolution_for_image(image: Image.Image) -> int:
     width, height = image.size
-    long_edge = max(width, height, DEFAULT_AI_MATTE_RESOLUTION)
-    return normalize_ai_resolution(min(long_edge, AI_MATTE_MAX_RESOLUTION))
+    area_edge = math.sqrt(max(1, width) * max(1, height))
+    target_edge = max(DEFAULT_AI_MATTE_RESOLUTION, area_edge)
+    return normalize_ai_resolution(min(target_edge, AI_MATTE_MAX_RESOLUTION))
 
 
 def resolve_ai_resolution(value, image: Image.Image) -> int:
@@ -1283,26 +1284,78 @@ def register_uploaded_media(file_items: list) -> dict:
 def auto_key_color(image: Image.Image) -> tuple[int, int, int]:
     rgba = image.convert("RGBA")
     width, height = rgba.size
-    sample_size = max(4, min(width, height) // 16)
-    boxes = [
-        (0, 0, sample_size, sample_size),
-        (width - sample_size, 0, width, sample_size),
-        (0, height - sample_size, sample_size, height),
-        (width - sample_size, height - sample_size, width, height),
+    color, _ratio = dominant_border_key_color(rgba)
+    return color
+
+
+def dominant_border_key_color(image: Image.Image) -> tuple[tuple[int, int, int], float]:
+    rgba = image.convert("RGBA")
+    width, height = rgba.size
+    if width <= 0 or height <= 0:
+        return (0, 255, 0), 0.0
+
+    step = max(1, min(width, height) // 128)
+    coords: set[tuple[int, int]] = set()
+    for x in range(0, width, step):
+        coords.add((x, 0))
+        coords.add((x, height - 1))
+    for y in range(0, height, step):
+        coords.add((0, y))
+        coords.add((width - 1, y))
+    coords.update({(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)})
+
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    total = 0
+    for x, y in coords:
+        r_value, g_value, b_value, alpha = rgba.getpixel((x, y))
+        if alpha < 8:
+            continue
+        bucket = (r_value // 16, g_value // 16, b_value // 16)
+        entry = buckets.setdefault(bucket, [0, 0, 0, 0])
+        entry[0] += 1
+        entry[1] += r_value
+        entry[2] += g_value
+        entry[3] += b_value
+        total += 1
+
+    if total <= 0 or not buckets:
+        return (0, 255, 0), 0.0
+
+    def screen_color_priority(entry: list[int]) -> int:
+        count, r_total, g_total, b_total = entry
+        color = (
+            round(r_total / count),
+            round(g_total / count),
+            round(b_total / count),
+        )
+        high = max(color)
+        low = min(color)
+        spread = high - low
+        if low >= 224 and spread <= 48:
+            return 4
+        if high <= 40 and spread <= 40:
+            return 3
+        if color[1] >= 96 and color[1] - max(color[0], color[2]) >= 48:
+            return 2
+        if color[2] >= 96 and color[2] - max(color[0], color[1]) >= 48:
+            return 2
+        return 0
+
+    screen_candidates = [
+        item for item in buckets.items()
+        if (item[1][0] / total) >= 0.12 and screen_color_priority(item[1]) > 0
     ]
-    totals = [0, 0, 0]
-    count = 0
-    for left, top, right, bottom in boxes:
-        for y in range(top, bottom):
-            for x in range(left, right):
-                r_value, g_value, b_value, _ = rgba.getpixel((x, y))
-                totals[0] += r_value
-                totals[1] += g_value
-                totals[2] += b_value
-                count += 1
-    if count <= 0:
-        return (0, 255, 0)
-    return tuple(int(value / count) for value in totals)
+    if screen_candidates:
+        _bucket, best = max(screen_candidates, key=lambda item: (screen_color_priority(item[1]), item[1][0]))
+    else:
+        _bucket, best = max(buckets.items(), key=lambda item: item[1][0])
+    count, r_total, g_total, b_total = best
+    color = (
+        round(r_total / count),
+        round(g_total / count),
+        round(b_total / count),
+    )
+    return color, count / total
 
 
 def chroma_key_frame(
@@ -1612,23 +1665,12 @@ def corridorkey_refine_frame(
     return refined, info
 
 
-def fit_image_to_square(image: Image.Image, size: int) -> tuple[Image.Image, tuple[int, int, int, int]]:
+def resize_birefnet_input(image: Image.Image, size: int) -> Image.Image:
     rgb = image.convert("RGB")
     width, height = rgb.size
     if width <= 0 or height <= 0:
         raise ValueError("invalid image size for BiRefNet inference")
-
-    scale = min(size / width, size / height)
-    resized_size = (
-        max(1, round(width * scale)),
-        max(1, round(height * scale)),
-    )
-    resized = rgb.resize(resized_size, LANCZOS)
-    canvas = Image.new("RGB", (size, size), (0, 0, 0))
-    left = (size - resized_size[0]) // 2
-    top = (size - resized_size[1]) // 2
-    canvas.paste(resized, (left, top))
-    return canvas, (left, top, left + resized_size[0], top + resized_size[1])
+    return rgb.resize((size, size), LANCZOS)
 
 
 def birefnet_mask_score(mask: Image.Image) -> dict:
@@ -1656,6 +1698,20 @@ def is_weak_birefnet_mask(score: dict) -> bool:
     return max_alpha < 80 or (max_alpha < 128 and strong_ratio < 0.002 and visible_ratio < 0.08)
 
 
+def is_low_confidence_birefnet_mask(score: dict) -> bool:
+    max_alpha = int(score.get("max_alpha") or 0)
+    mean_alpha = float(score.get("mean_alpha") or 0.0)
+    strong_ratio = float(score.get("strong_ratio") or 0.0)
+    visible_ratio = float(score.get("visible_ratio") or 0.0)
+    if max_alpha < 80:
+        return True
+    if visible_ratio <= 0.15:
+        return False
+    if strong_ratio >= 0.03:
+        return False
+    return mean_alpha < 36
+
+
 def should_use_birefnet_fallback(current_score: dict, fallback_score: dict) -> bool:
     current_max = int(current_score.get("max_alpha") or 0)
     fallback_max = int(fallback_score.get("max_alpha") or 0)
@@ -1668,6 +1724,53 @@ def should_use_birefnet_fallback(current_score: dict, fallback_score: dict) -> b
     return current_max < 80 and fallback_strong >= 0.005
 
 
+def should_use_solid_background_fallback(
+    ai_score: dict,
+    solid_score: dict,
+    border_color_ratio: float,
+) -> bool:
+    if border_color_ratio < 0.18:
+        return False
+    if not is_low_confidence_birefnet_mask(ai_score):
+        return False
+    solid_strong = float(solid_score.get("strong_ratio") or 0.0)
+    solid_mean = float(solid_score.get("mean_alpha") or 0.0)
+    ai_strong = float(ai_score.get("strong_ratio") or 0.0)
+    ai_mean = float(ai_score.get("mean_alpha") or 0.0)
+    if solid_strong < 0.03:
+        return False
+    return solid_strong >= max(ai_strong * 4.0, 0.08) and solid_mean >= max(ai_mean * 2.0, 40.0)
+
+
+def solid_background_fallback_alpha(
+    image: Image.Image,
+    ai_score: dict,
+    threshold: int,
+    softness: int,
+) -> tuple[Image.Image, dict] | None:
+    key_rgb, border_ratio = dominant_border_key_color(image)
+    solid_frame = chroma_key_frame(
+        image=image,
+        key_rgb=key_rgb,
+        threshold=max(0, min(255, int(threshold))),
+        softness=max(0, min(255, int(softness))),
+        despill_strength=0.0,
+        halo_pixels=0,
+    )
+    alpha = solid_frame.getchannel("A")
+    solid_score = birefnet_mask_score(alpha)
+    if not should_use_solid_background_fallback(ai_score, solid_score, border_ratio):
+        return None
+    return alpha, {
+        "solid_key_fallback": True,
+        "solid_key_color": rgb_to_hex(key_rgb),
+        "solid_key_border_ratio": border_ratio,
+        "solid_key_score": solid_score,
+        "fallback_model_key": "solid-background-key",
+        "fallback_reason": "BiRefNet produced a low-confidence alpha; used solid background key fallback",
+    }
+
+
 def run_birefnet_inference(
     image: Image.Image,
     model_key: str,
@@ -1676,7 +1779,7 @@ def run_birefnet_inference(
 ) -> tuple[Image.Image, dict]:
     torch_module, transforms, _auto_model = import_ai_matte_dependencies()
     model, device, normalized_model_key, repo_id = load_birefnet_model(model_key, requested_device)
-    fitted_image, fitted_box = fit_image_to_square(image, resolution)
+    fitted_image = resize_birefnet_input(image, resolution)
     transform = transforms.Compose(
         [
             transforms.ToTensor(),
@@ -1693,13 +1796,14 @@ def run_birefnet_inference(
     with torch_module.no_grad():
         prediction = model(input_tensor)[-1].sigmoid().to("cpu")
     mask = transforms.ToPILImage()(prediction[0].squeeze()).convert("L")
-    mask = mask.crop(fitted_box).resize(image.size, LANCZOS)
+    mask = mask.resize(image.size, LANCZOS)
     return mask, {
         "model_key": normalized_model_key,
         "model_label": AI_MATTE_MODEL_LABELS[normalized_model_key],
         "repo_id": repo_id,
         "device": device,
         "resolution": resolution,
+        "preprocess": "square_resize",
     }
 
 
@@ -1708,6 +1812,8 @@ def birefnet_alpha_mask(
     model_key: str,
     requested_device: str,
     inference_resolution: int | str | None,
+    solid_fallback_threshold: int = 42,
+    solid_fallback_softness: int = 8,
 ) -> tuple[Image.Image, dict]:
     normalized_model_key = normalize_ai_model_key(model_key)
     resolution = resolve_ai_resolution(inference_resolution, image)
@@ -1717,9 +1823,22 @@ def birefnet_alpha_mask(
     info["requested_model_key"] = normalized_model_key
     info["fallback_model_key"] = ""
     info["fallback_reason"] = ""
+    info["solid_key_fallback"] = False
+    info["solid_key_color"] = ""
+
+    solid_fallback = solid_background_fallback_alpha(
+        image,
+        score,
+        solid_fallback_threshold,
+        solid_fallback_softness,
+    )
+    if solid_fallback is not None:
+        solid_mask, solid_info = solid_fallback
+        info.update(solid_info)
+        return solid_mask, info
 
     fallback_model_key = "birefnet-general"
-    if normalized_model_key != fallback_model_key and is_weak_birefnet_mask(score):
+    if normalized_model_key != fallback_model_key and (is_weak_birefnet_mask(score) or is_low_confidence_birefnet_mask(score)):
         fallback_mask, fallback_info = run_birefnet_inference(image, fallback_model_key, requested_device, resolution)
         fallback_score = birefnet_mask_score(fallback_mask)
         if should_use_birefnet_fallback(score, fallback_score):
@@ -1727,6 +1846,8 @@ def birefnet_alpha_mask(
             fallback_info["requested_model_key"] = normalized_model_key
             fallback_info["fallback_model_key"] = fallback_model_key
             fallback_info["fallback_reason"] = "selected BiRefNet model produced a weak alpha mask"
+            fallback_info["solid_key_fallback"] = False
+            fallback_info["solid_key_color"] = ""
             return fallback_mask, fallback_info
 
     return mask, info
@@ -1793,6 +1914,9 @@ def despill_alpha_edges(
     k_r, k_g, k_b = key_rgb
     key_channels = (k_r, k_g, k_b)
     spill_channel = max(range(3), key=lambda index: key_channels[index])
+    sorted_key_channels = sorted(key_channels, reverse=True)
+    if sorted_key_channels[0] - sorted_key_channels[1] < 24:
+        return image
     output_pixels: list[tuple[int, int, int, int]] = []
     for r_value, g_value, b_value, alpha in rgba.getdata():
         channels = [r_value, g_value, b_value]
@@ -1927,7 +2051,14 @@ def apply_matte_pipeline(
     corridor_info: dict | None = None
     resolved_ai_model = ai_model
     for raw_image in raw_images:
-        ai_alpha, ai_info = birefnet_alpha_mask(raw_image, resolved_ai_model, ai_device, ai_resolution)
+        ai_alpha, ai_info = birefnet_alpha_mask(
+            raw_image,
+            resolved_ai_model,
+            ai_device,
+            ai_resolution,
+            threshold,
+            softness,
+        )
         resolved_ai_model = update_ai_model_after_fallback(resolved_ai_model, ai_info)
         if matte_info["halo_pixels"] > 0:
             filter_size = (matte_info["halo_pixels"] * 2) + 1

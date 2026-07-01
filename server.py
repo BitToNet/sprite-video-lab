@@ -140,6 +140,8 @@ CANVAS_MODES = {"auto", "square_bottom", "square_center"}
 LINE_CLEANER_METHODS = {"classic", "realesrgan_anime"}
 REAL_ESRGAN_ANIME_MODEL = "realesrgan-x4plus-anime"
 MAGIC_CROP_PADDING = 24
+MAGIC_UPSCALE = 4
+MAGIC_ALPHA_LOSS_FALLBACK_RATIO = 0.05
 MAGIC_VARIANTS = (
     {"key": "half", "label": "1/2", "scale": 0.5, "dir": "frames"},
     {"key": "quarter", "label": "1/4", "scale": 0.25, "dir": "frames-quarter"},
@@ -394,6 +396,16 @@ def safe_float(value, default: float) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def safe_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 def normalize_ai_resolution(value) -> int:
@@ -1283,9 +1295,55 @@ def register_uploaded_media(file_items: list) -> dict:
 
 def auto_key_color(image: Image.Image) -> tuple[int, int, int]:
     rgba = image.convert("RGBA")
-    width, height = rgba.size
+    chroma_color, chroma_ratio = dominant_chroma_screen_color(rgba)
+    if chroma_color is not None and chroma_ratio >= 0.18:
+        return chroma_color
     color, _ratio = dominant_border_key_color(rgba)
     return color
+
+
+def dominant_chroma_screen_color(image: Image.Image) -> tuple[tuple[int, int, int] | None, float]:
+    rgba = image.convert("RGBA")
+    width, height = rgba.size
+    if width <= 0 or height <= 0:
+        return None, 0.0
+
+    pixel_count = width * height
+    step = max(1, round(math.sqrt(pixel_count / 20000)))
+    totals = {
+        "green": [0, 0, 0, 0],
+        "blue": [0, 0, 0, 0],
+    }
+    sampled = 0
+    for y in range(0, height, step):
+        for x in range(0, width, step):
+            r_value, g_value, b_value, alpha = rgba.getpixel((x, y))
+            if alpha < 8:
+                continue
+            sampled += 1
+            if g_value >= 120 and g_value - max(r_value, b_value) >= 50:
+                entry = totals["green"]
+            elif b_value >= 120 and b_value - max(r_value, g_value) >= 50:
+                entry = totals["blue"]
+            else:
+                continue
+            entry[0] += 1
+            entry[1] += r_value
+            entry[2] += g_value
+            entry[3] += b_value
+
+    if sampled <= 0:
+        return None, 0.0
+    best = max(totals.values(), key=lambda entry: entry[0])
+    count, r_total, g_total, b_total = best
+    if count <= 0:
+        return None, 0.0
+    color = (
+        round(r_total / count),
+        round(g_total / count),
+        round(b_total / count),
+    )
+    return color, count / sampled
 
 
 def dominant_border_key_color(image: Image.Image) -> tuple[tuple[int, int, int], float]:
@@ -1865,6 +1923,7 @@ def luminance_alpha_mask(
     white_point: int,
     gamma: float,
     strength: float,
+    polarity: str = "bright",
     key_rgb: tuple[int, int, int] | None = None,
     key_suppression: float = 0.95,
 ) -> Image.Image:
@@ -1877,9 +1936,12 @@ def luminance_alpha_mask(
     scale = white - black
     output = Image.new("L", rgb.size)
     output_pixels: list[int] = []
+    keep_dark = polarity == "dark"
     for r_value, g_value, b_value in rgb.getdata():
         luma = int((0.2126 * r_value) + (0.7152 * g_value) + (0.0722 * b_value))
         normalized = clamp_float((luma - black) / scale, 0.0, 1.0)
+        if keep_dark:
+            normalized = 1.0 - normalized
         adjusted = normalized ** curve_gamma
         alpha = clamp_float(adjusted * curve_strength, 0.0, 1.0)
         if key_rgb is not None and key_strength > 0:
@@ -1890,6 +1952,35 @@ def luminance_alpha_mask(
         output_pixels.append(round(alpha * 255))
     output.putdata(output_pixels)
     return output
+
+
+def normalize_luma_polarity(value: str | None) -> str:
+    normalized = str(value or "bright").strip().lower().replace("-", "_")
+    aliases = {
+        "light": "bright",
+        "white": "bright",
+        "keep_bright": "bright",
+        "dark": "dark",
+        "black": "dark",
+        "inverse": "dark",
+        "invert": "dark",
+        "remove_white": "dark",
+        "white_bg": "dark",
+        "auto": "auto",
+    }
+    return aliases.get(normalized, "bright")
+
+
+def luma_value(rgb: tuple[int, int, int]) -> int:
+    r_value, g_value, b_value = rgb
+    return int((0.2126 * r_value) + (0.7152 * g_value) + (0.0722 * b_value))
+
+
+def resolve_luma_polarity(polarity: str, key_rgb: tuple[int, int, int]) -> str:
+    normalized = normalize_luma_polarity(polarity)
+    if normalized != "auto":
+        return normalized
+    return "dark" if luma_value(key_rgb) >= 128 else "bright"
 
 
 def apply_alpha_mask(image: Image.Image, alpha_mask: Image.Image) -> Image.Image:
@@ -1957,6 +2048,7 @@ def apply_matte_pipeline(
     luma_white: int,
     luma_gamma: float,
     luma_strength: float,
+    luma_polarity: str,
     corridorkey_enabled: bool,
     corridorkey_screen: str,
 ) -> tuple[list[Image.Image], tuple[int, int, int], dict]:
@@ -1969,6 +2061,8 @@ def apply_matte_pipeline(
         key_rgb = parse_hex_color(manual_key_hex)
     normalized_luma_black = max(0, min(254, int(luma_black)))
     normalized_luma_white = max(normalized_luma_black + 1, min(255, int(luma_white)))
+    normalized_luma_polarity = normalize_luma_polarity(luma_polarity)
+    resolved_luma_polarity = resolve_luma_polarity(normalized_luma_polarity, key_rgb)
     matte_info = {
         "mode": mode,
         "model_key": "",
@@ -1981,6 +2075,8 @@ def apply_matte_pipeline(
         "luma_white": normalized_luma_white,
         "luma_gamma": max(0.05, float(luma_gamma or 1.0)),
         "luma_strength": max(0.0, min(2.0, float(luma_strength or 1.0))),
+        "luma_polarity": normalized_luma_polarity,
+        "luma_resolved_polarity": resolved_luma_polarity,
         "despill_strength": max(0.0, min(2.5, float(despill_strength or 0.0))),
         "halo_pixels": max(0, int(halo_pixels)),
         "corridorkey_enabled": False,
@@ -2036,6 +2132,7 @@ def apply_matte_pipeline(
                 max(matte_info["luma_black"] + 1, matte_info["luma_white"]),
                 matte_info["luma_gamma"],
                 matte_info["luma_strength"],
+                polarity=matte_info["luma_resolved_polarity"],
                 key_rgb=key_rgb,
             )
             if matte_info["halo_pixels"] > 0:
@@ -2070,6 +2167,7 @@ def apply_matte_pipeline(
                 max(matte_info["luma_black"] + 1, matte_info["luma_white"]),
                 matte_info["luma_gamma"],
                 matte_info["luma_strength"],
+                polarity=matte_info["luma_resolved_polarity"],
                 key_rgb=key_rgb,
             )
             if mode == "birefnet_luma_key":
@@ -2338,6 +2436,7 @@ def process_video_to_job(
     luma_white: int,
     luma_gamma: float,
     luma_strength: float,
+    luma_polarity: str,
     corridorkey_enabled: bool,
     corridorkey_screen: str,
     batch_green_to_black: bool = False,
@@ -2421,6 +2520,7 @@ def process_video_to_job(
         luma_white=luma_white,
         luma_gamma=luma_gamma,
         luma_strength=luma_strength,
+        luma_polarity=luma_polarity,
         corridorkey_enabled=corridorkey_enabled,
         corridorkey_screen=corridorkey_screen,
     )
@@ -2796,6 +2896,7 @@ def preview_frame(
     luma_white: int,
     luma_gamma: float,
     luma_strength: float,
+    luma_polarity: str,
     corridorkey_enabled: bool,
     corridorkey_screen: str,
     batch_green_to_black: bool = False,
@@ -2856,6 +2957,7 @@ def preview_frame(
         luma_white=luma_white,
         luma_gamma=luma_gamma,
         luma_strength=luma_strength,
+        luma_polarity=luma_polarity,
         corridorkey_enabled=corridorkey_enabled,
         corridorkey_screen=corridorkey_screen,
     )
@@ -3269,6 +3371,39 @@ def resize_rgba_premultiplied(
     return image.convert("RGBA").convert("RGBa").resize(target_size, resample).convert("RGBA")
 
 
+def alpha_coverage(image: Image.Image) -> float:
+    rgba = image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    total = max(1, rgba.width * rgba.height)
+    return sum(alpha.histogram()[1:]) / total
+
+
+def image_has_visible_alpha(image: Image.Image) -> bool:
+    return image.convert("RGBA").getchannel("A").getbbox() is not None
+
+
+def image_path_has_visible_alpha(path: Path) -> bool:
+    try:
+        with Image.open(path) as image:
+            return image_has_visible_alpha(image)
+    except (OSError, FileNotFoundError):
+        return False
+
+
+def magic_output_lost_alpha(source: Image.Image, output: Image.Image) -> bool:
+    source_coverage = alpha_coverage(source)
+    if source_coverage <= 0:
+        return False
+    output_coverage = alpha_coverage(output)
+    return output_coverage <= 0 or output_coverage < source_coverage * MAGIC_ALPHA_LOSS_FALLBACK_RATIO
+
+
+def fallback_magic_upscale(image: Image.Image, scale: int = MAGIC_UPSCALE) -> Image.Image:
+    rgba = image.convert("RGBA")
+    target_size = (max(1, rgba.width * scale), max(1, rgba.height * scale))
+    return resize_rgba_premultiplied(rgba, target_size, LANCZOS)
+
+
 def normalize_magic_resize_mode(value: str | None) -> str:
     mode = str(value or MAGIC_RESIZE_MODE_DEFAULT).strip().lower()
     return mode if mode in MAGIC_RESIZE_MODES else MAGIC_RESIZE_MODE_DEFAULT
@@ -3319,6 +3454,10 @@ def build_magic_upscaled_frame(
 
     with Image.open(ai_output_path) as upscaled_image:
         upscaled_crop = upscaled_image.convert("RGBA")
+    if magic_output_lost_alpha(crop_rgba, upscaled_crop):
+        upscaled_crop.close()
+        upscaled_crop = fallback_magic_upscale(crop_rgba)
+        upscaled_crop.save(ai_output_path, optimize=True, compress_level=9)
     scale_x = max(1, round(upscaled_crop.width / crop_rgba.width))
     scale_y = max(1, round(upscaled_crop.height / crop_rgba.height))
 
@@ -3366,8 +3505,26 @@ def resolve_magic_variant_dir(manifest: dict, variant: dict) -> Path:
     return source_dir
 
 
-def find_cached_magic_frames(job_id: str, resize_mode: str) -> dict[int, dict[str, dict]]:
+def find_cached_magic_frames(
+    job_id: str,
+    resize_mode: str,
+    use_realesrgan: bool = True,
+) -> dict[int, dict[str, dict]]:
     cache: dict[int, dict[str, dict]] = {}
+    expected_model = REAL_ESRGAN_ANIME_MODEL if use_realesrgan else "none"
+    try:
+        job_manifest = load_job_manifest(job_id)
+        processed_dir = job_dir(job_id) / "processed"
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        job_manifest = {}
+        processed_dir = job_dir(job_id) / "processed"
+    source_alpha_by_index: dict[int, bool] = {}
+    for entry in job_manifest.get("frames") or []:
+        source_index = safe_int(entry.get("index"), -1)
+        source_path = processed_dir / str(entry.get("name") or "")
+        if source_index >= 0 and source_path.exists():
+            source_alpha_by_index[source_index] = image_path_has_visible_alpha(source_path)
+
     manifest_paths = sorted(
         MAGIC_DIR.glob("*-magic/manifest.json"),
         key=lambda path: path.stat().st_mtime,
@@ -3380,7 +3537,13 @@ def find_cached_magic_frames(job_id: str, resize_mode: str) -> dict[int, dict[st
             continue
         if manifest.get("job_id") != job_id:
             continue
-        if manifest.get("model") != REAL_ESRGAN_ANIME_MODEL:
+        manifest_uses_realesrgan = safe_bool(
+            manifest.get("use_realesrgan"),
+            manifest.get("model") == REAL_ESRGAN_ANIME_MODEL,
+        )
+        if manifest_uses_realesrgan != use_realesrgan:
+            continue
+        if manifest.get("model") != expected_model:
             continue
         if normalize_magic_resize_mode(manifest.get("resize_mode")) != resize_mode:
             continue
@@ -3412,6 +3575,11 @@ def find_cached_magic_frames(job_id: str, resize_mode: str) -> dict[int, dict[st
                     break
                 cached_variants[variant_key] = cached
             else:
+                if source_alpha_by_index.get(source_index) and any(
+                    not image_path_has_visible_alpha(cached["path"])
+                    for cached in cached_variants.values()
+                ):
+                    continue
                 cache[source_index] = cached_variants
     return cache
 
@@ -3747,9 +3915,12 @@ def magic_preview_job(
     job_id: str,
     selected_indices: list[int],
     resize_mode: str = MAGIC_RESIZE_MODE_DEFAULT,
+    use_realesrgan: bool = True,
 ) -> dict:
     resize_mode = normalize_magic_resize_mode(resize_mode)
     resize_mode_label = str(MAGIC_RESIZE_MODES[resize_mode]["label"])
+    use_realesrgan = bool(use_realesrgan)
+    model_name = REAL_ESRGAN_ANIME_MODEL if use_realesrgan else "none"
     manifest = load_job_manifest(job_id)
     processed_dir = job_dir(job_id) / "processed"
     frame_map = {entry["index"]: entry for entry in manifest["frames"]}
@@ -3762,9 +3933,10 @@ def magic_preview_job(
     if not indices:
         raise ValueError("no frames selected for MAGIC")
 
-    binary = resolve_realesrgan_binary()
-    if not binary or not resolve_realesrgan_model_dir(binary):
-        raise RuntimeError(realesrgan_missing_message())
+    if use_realesrgan:
+        binary = resolve_realesrgan_binary()
+        if not binary or not resolve_realesrgan_model_dir(binary):
+            raise RuntimeError(realesrgan_missing_message())
 
     magic_id = timestamped_id()
     root = MAGIC_DIR / f"{magic_id}-magic"
@@ -3788,7 +3960,7 @@ def magic_preview_job(
     for directory in (ai_input_dir, ai_output_dir, *[Path(variant["frames_dir"]) for variant in variants.values()]):
         directory.mkdir(parents=True, exist_ok=True)
 
-    cached_magic = find_cached_magic_frames(job_id, resize_mode)
+    cached_magic = find_cached_magic_frames(job_id, resize_mode, use_realesrgan)
     generated_count = 0
     reused_count = 0
     for output_index, frame_index in enumerate(indices, start=1):
@@ -3835,7 +4007,11 @@ def magic_preview_job(
 
         with Image.open(source_path) as image:
             source_rgba = image.convert("RGBA")
-        upscaled_frame, source_size = build_magic_upscaled_frame(source_rgba, ai_input_path, ai_output_path)
+        if use_realesrgan:
+            upscaled_frame, source_size = build_magic_upscaled_frame(source_rgba, ai_input_path, ai_output_path)
+        else:
+            source_size = source_rgba.size
+            upscaled_frame = source_rgba.copy()
         generated_count += 1
 
         for variant in variants.values():
@@ -3876,8 +4052,9 @@ def magic_preview_job(
     result = {
         "magic_id": magic_id,
         "job_id": job_id,
-        "model": REAL_ESRGAN_ANIME_MODEL,
-        "upscale": 4,
+        "model": model_name,
+        "use_realesrgan": use_realesrgan,
+        "upscale": MAGIC_UPSCALE if use_realesrgan else 1,
         "final_scale": 0.5,
         "resize_mode": resize_mode,
         "resize_mode_label": resize_mode_label,
@@ -4036,6 +4213,11 @@ def export_magic_frames(
         "source_magic_id": manifest.get("magic_id") or magic_id,
         "variant_key": variant_key,
         "variant_label": variant.get("label") or "1/2",
+        "model": manifest.get("model") or REAL_ESRGAN_ANIME_MODEL,
+        "use_realesrgan": safe_bool(
+            manifest.get("use_realesrgan"),
+            manifest.get("model") == REAL_ESRGAN_ANIME_MODEL,
+        ),
         "resize_mode": manifest.get("resize_mode") or MAGIC_RESIZE_MODE_DEFAULT,
         "resize_mode_label": manifest.get("resize_mode_label") or MAGIC_RESIZE_MODES[MAGIC_RESIZE_MODE_DEFAULT]["label"],
         "created_at": iso_now(),
@@ -4263,6 +4445,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     luma_white=max(1, min(255, safe_int(payload.get("luma_white"), 230))),
                     luma_gamma=max(0.05, safe_float(payload.get("luma_gamma"), 1.0)),
                     luma_strength=max(0.0, min(2.0, safe_float(payload.get("luma_strength"), 1.0))),
+                    luma_polarity=normalize_luma_polarity(str(payload.get("luma_polarity") or "auto")),
                     corridorkey_enabled=bool(payload.get("corridorkey_enabled", False)),
                     corridorkey_screen=normalize_corridorkey_screen(str(payload.get("corridorkey_screen") or "auto")),
                     batch_green_to_black=bool(payload.get("batch_green_to_black", False)),
@@ -4297,6 +4480,7 @@ class AppHandler(BaseHTTPRequestHandler):
                     luma_white=max(1, min(255, safe_int(payload.get("luma_white"), 230))),
                     luma_gamma=max(0.05, safe_float(payload.get("luma_gamma"), 1.0)),
                     luma_strength=max(0.0, min(2.0, safe_float(payload.get("luma_strength"), 1.0))),
+                    luma_polarity=normalize_luma_polarity(str(payload.get("luma_polarity") or "auto")),
                     corridorkey_enabled=bool(payload.get("corridorkey_enabled", False)),
                     corridorkey_screen=normalize_corridorkey_screen(str(payload.get("corridorkey_screen") or "auto")),
                     batch_green_to_black=bool(payload.get("batch_green_to_black", False)),
@@ -4366,6 +4550,7 @@ class AppHandler(BaseHTTPRequestHandler):
                         job_id=str(payload.get("job_id") or ""),
                         selected_indices=[safe_int(value, -1) for value in (payload.get("selected_indices") or [])],
                         resize_mode=str(payload.get("resize_mode") or MAGIC_RESIZE_MODE_DEFAULT),
+                        use_realesrgan=safe_bool(payload.get("use_realesrgan"), True),
                     )
                     self.send_json({"ok": True, "magic": result})
                 finally:

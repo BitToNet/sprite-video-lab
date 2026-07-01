@@ -48,7 +48,7 @@
         </a>
         <a href="#processPanel" class="rail-item">
           <span class="rail-index">03</span>
-          <span>抠图算法</span>
+          <span>去背景</span>
         </a>
         <a href="#resultPanel" class="rail-item">
           <span class="rail-index">04</span>
@@ -107,7 +107,7 @@
             </div>
             <div class="preview-head-actions">
               <span id="currentTimeLabel" class="time-chip">当前 0.00s</span>
-              <a class="primary-button small-link" href="#processPanel">选择抠图算法</a>
+              <a class="primary-button small-link" href="#processPanel">去背景设置</a>
             </div>
           </div>
 
@@ -171,7 +171,7 @@
           <div class="section-head">
             <div>
               <p class="section-kicker">Matte</p>
-              <h2>选择抠图算法与输出设置</h2>
+              <h2>去背景与输出设置</h2>
             </div>
             <div class="step-lock-note" id="processLockNote">导入素材后即可预览当前帧并开始处理。</div>
           </div>
@@ -220,7 +220,7 @@
 
                 <div class="control-group matte-algorithm-group">
                   <div class="group-title">
-                    <span>选择抠图算法</span>
+                    <span>去背景</span>
                   </div>
                   <div class="form-grid">
                     <label class="field checkbox-field">
@@ -232,9 +232,9 @@
                     </label>
 
                     <label class="field">
-                      <span>抠图算法</span>
+                      <span>处理方式</span>
                       <select id="matteModeInput">
-                        <option value="chroma">chroma key</option>
+                        <option value="chroma" selected>chroma key</option>
                         <option value="birefnet">只用 BiRefNet</option>
                         <option value="corridorkey">只用 CorridorKey</option>
                         <option value="luma">只用 Luma</option>
@@ -243,63 +243,20 @@
                         <option value="birefnet_luma">BiRefNet 保主体 / Luma 补亮部</option>
                         <option value="birefnet_luma_key">BiRefNet 后再用 Luma 收紧抠图</option>
                         <option value="birefnet_luma_corridorkey">BiRefNet + Luma 合并后 / CorridorKey 精修</option>
-                        <option value="none">不抠图，只缩放对齐</option>
+                        <option value="none">不去背景</option>
                       </select>
-                      <small>“精修”会重建边缘和颜色；“收紧”只会进一步删掉背景。</small>
+                      <small>选处理方式即可，细节由程序自动处理。</small>
                     </label>
+                  </div>
+                </div>
 
-                    <details class="algorithm-help" aria-label="抠图算法说明">
-                      <summary class="algorithm-help-head">
-                        <strong>算法速查</strong>
-                        <span>先按素材类型选，再用单帧预览微调。</span>
-                        <span class="algorithm-help-toggle" aria-hidden="true"></span>
-                      </summary>
-                      <dl>
-                        <div>
-                          <dt>chroma key</dt>
-                          <dd>最快。适合绿幕、蓝幕、白底、灰底等受控纯色背景。</dd>
-                        </div>
-                        <div>
-                          <dt>只用 BiRefNet</dt>
-                          <dd>AI 主体抠图。适合非纯色背景、AI 生成背景、真实环境背景。</dd>
-                        </div>
-                        <div>
-                          <dt>只用 CorridorKey</dt>
-                          <dd>先生成粗 alpha，再重建绿幕/蓝幕边缘和前景颜色。</dd>
-                        </div>
-                        <div>
-                          <dt>只用 Luma</dt>
-                          <dd>按亮度生成 alpha。适合火焰、闪电、发光粒子等亮部特效。</dd>
-                        </div>
-                        <div>
-                          <dt>BiRefNet 粗蒙版 / CorridorKey 精修边缘</dt>
-                          <dd>BiRefNet 先找主体，CorridorKey 再修绿幕/蓝幕边缘。</dd>
-                        </div>
-                        <div>
-                          <dt>BiRefNet 后再用 CorridorKey 收紧抠图</dt>
-                          <dd>先精修边缘，再和 BiRefNet alpha 相交，只继续删除背景。</dd>
-                        </div>
-                        <div>
-                          <dt>BiRefNet 保主体 / Luma 补亮部</dt>
-                          <dd>主体 alpha 加亮度 alpha。适合 VFX 重、需要保留发光尾迹的素材。</dd>
-                        </div>
-                        <div>
-                          <dt>BiRefNet 后再用 Luma 收紧抠图</dt>
-                          <dd>BiRefNet alpha 与亮度 alpha 相交，让 Luma 删除不够亮的背景。</dd>
-                        </div>
-                        <div>
-                          <dt>BiRefNet + Luma 合并后 / CorridorKey 精修</dt>
-                          <dd>先合并主体和亮部，再用 CorridorKey 做边缘/颜色重建。</dd>
-                        </div>
-                        <div>
-                          <dt>不抠图，只缩放对齐</dt>
-                          <dd>素材已经带透明通道时用，避免重新抠图破坏原 alpha。</dd>
-                        </div>
-                      </dl>
-                    </details>
-
-                    <label class="field">
-                      <span>取色方式</span>
+                <div class="control-group matte-target-group">
+                  <div class="group-title">
+                    <span>背景目标</span>
+                  </div>
+                  <div class="form-grid">
+                    <label class="field chroma-only">
+                      <span>背景色</span>
                       <select id="keyModeInput">
                         <option value="auto">自动取背景色</option>
                         <option value="manual">手动指定颜色</option>
@@ -307,48 +264,35 @@
                     </label>
 
                     <label id="manualColorField" class="field manual-color-field">
-                      <span>背景色</span>
+                      <span>指定颜色</span>
                       <div class="color-field">
                         <input id="manualKeyInput" type="color" value="#00ff00">
                         <strong id="manualKeyLabel">#00FF00</strong>
                       </div>
                     </label>
-                  </div>
-                </div>
 
-                <div class="control-group chroma-only">
-                  <div class="group-title">
-                    <span>绿幕参数</span>
-                  </div>
-                  <div class="form-grid">
-                    <label class="field">
-                      <span>阈值</span>
-                      <input id="thresholdInput" type="number" min="0" max="255" step="1" value="42">
-                    </label>
-                    <label class="field">
-                      <span>边缘柔化</span>
-                      <input id="softnessInput" type="number" min="0" max="255" step="1" value="8">
-                    </label>
-                  </div>
-                </div>
-
-                <div class="control-group spill-matte-only">
-                  <div class="group-title">
-                    <span>边缘修整</span>
-                  </div>
-                  <div class="form-grid">
-                    <label class="field">
-                      <span>去溢色</span>
-                      <input id="despillInput" type="number" min="0" max="1" step="0.05" value="0.6">
-                    </label>
-                    <label class="field">
-                      <span>Halo 收边</span>
-                      <input id="haloInput" type="number" min="0" max="20" step="1" value="1">
+                    <label class="field luma-matte-only">
+                      <span>Luma 背景</span>
+                      <select id="lumaPolarityInput">
+                        <option value="auto" selected>自动判断</option>
+                        <option value="bright">抠除黑色背景</option>
+                        <option value="dark">抠除白色背景</option>
+                      </select>
                     </label>
                   </div>
                 </div>
 
                 <div class="hidden-runtime-controls" hidden>
+                  <input id="thresholdInput" type="hidden" value="80">
+                  <input id="softnessInput" type="hidden" value="16">
+                  <input id="despillInput" type="hidden" value="0.6">
+                  <input id="haloInput" type="hidden" value="1">
+                  <input id="corridorEnabledInput" type="checkbox">
+                  <select id="corridorScreenInput" aria-label="幕布颜色">
+                    <option value="auto" selected>自动</option>
+                    <option value="green">绿色</option>
+                    <option value="blue">蓝色</option>
+                  </select>
                   <select id="aiModelInput" aria-label="AI 模型">
                     <option value="birefnet-hr-matting" selected>BiRefNet HR-matting</option>
                   </select>
@@ -358,58 +302,10 @@
                   <select id="aiResolutionInput" aria-label="AI 推理尺寸">
                     <option value="auto" selected>自动</option>
                   </select>
-                </div>
-
-                <div class="control-group corridor-key-only">
-                  <div class="group-title">
-                    <span>CorridorKey</span>
-                  </div>
-                  <div class="form-grid">
-                    <label class="field checkbox-field">
-                      <span>状态</span>
-                      <label class="checkbox-row">
-                        <input id="corridorEnabledInput" type="checkbox">
-                        <span>使用 CorridorKey 细化边缘</span>
-                      </label>
-                    </label>
-                    <label class="field">
-                      <span>幕布颜色</span>
-                      <select id="corridorScreenInput">
-                        <option value="auto">自动</option>
-                        <option value="green">绿色</option>
-                        <option value="blue">蓝色</option>
-                      </select>
-                    </label>
-                  </div>
-                </div>
-
-                <div class="control-group luma-matte-only">
-                  <div class="group-title">
-                    <span>Luma 遮罩</span>
-                    <span class="preset-row">
-                      <button type="button" class="ghost-button tiny" data-luma-preset="soft">温和</button>
-                      <button type="button" class="ghost-button tiny" data-luma-preset="balanced">中等</button>
-                      <button type="button" class="ghost-button tiny" data-luma-preset="strong">强力</button>
-                    </span>
-                  </div>
-                  <div class="form-grid">
-                    <label class="field">
-                      <span>黑场</span>
-                      <input id="lumaBlackInput" type="number" min="0" max="255" step="1" value="0">
-                    </label>
-                    <label class="field">
-                      <span>白场</span>
-                      <input id="lumaWhiteInput" type="number" min="0" max="255" step="1" value="85">
-                    </label>
-                    <label class="field">
-                      <span>Gamma</span>
-                      <input id="lumaGammaInput" type="number" min="0.1" max="5" step="0.05" value="0.55">
-                    </label>
-                    <label class="field">
-                      <span>强度</span>
-                      <input id="lumaStrengthInput" type="number" min="0.1" max="5" step="0.05" value="1.7">
-                    </label>
-                  </div>
+                  <input id="lumaBlackInput" type="hidden" value="0">
+                  <input id="lumaWhiteInput" type="hidden" value="85">
+                  <input id="lumaGammaInput" type="hidden" value="0.55">
+                  <input id="lumaStrengthInput" type="hidden" value="1.7">
                 </div>
 
                 <div class="control-group">
@@ -641,15 +537,21 @@
 
           <div class="export-bar">
             <button id="exportButton" class="primary-button large" type="button">导出选中帧</button>
-            <div class="magic-resize-mode" role="group" aria-label="MAGIC 缩放算法">
-              <label class="magic-resize-option">
-                <input id="magicResizeHardInput" type="checkbox" value="hard" checked>
-                <span>硬</span>
+            <div class="magic-controls">
+              <label class="magic-realesrgan-option">
+                <input id="magicUseRealesrganInput" type="checkbox" checked>
+                <span>Real-ESRGAN</span>
               </label>
-              <label class="magic-resize-option">
-                <input id="magicResizeSoftInput" type="checkbox" value="soft">
-                <span>软</span>
-              </label>
+              <div class="magic-resize-mode" role="group" aria-label="MAGIC 缩放算法">
+                <label class="magic-resize-option">
+                  <input id="magicResizeHardInput" type="checkbox" value="hard" checked>
+                  <span>硬</span>
+                </label>
+                <label class="magic-resize-option">
+                  <input id="magicResizeSoftInput" type="checkbox" value="soft">
+                  <span>软</span>
+                </label>
+              </div>
             </div>
             <button id="magicButton" class="magic-button large" type="button">MAGIC</button>
           </div>

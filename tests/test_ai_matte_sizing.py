@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from PIL import Image
 
@@ -40,6 +43,14 @@ class AiMatteSizingTests(unittest.TestCase):
 
         self.assertEqual(server.auto_key_color(image), (255, 255, 255))
 
+    def test_auto_key_color_prefers_large_green_screen_inside_dark_frame(self):
+        image = Image.new("RGBA", (128, 64), (1, 1, 1, 255))
+        for y in range(12, 56):
+            for x in range(20, 118):
+                image.putpixel((x, y), (0, 255, 0, 255))
+
+        self.assertEqual(server.auto_key_color(image), (0, 255, 0))
+
     def test_solid_background_fallback_accepts_low_confidence_ai_mask(self):
         image = Image.new("RGBA", (128, 64), (255, 255, 255, 255))
         for y in range(24, 64):
@@ -59,6 +70,162 @@ class AiMatteSizingTests(unittest.TestCase):
         self.assertEqual(info["solid_key_color"], "#FFFFFF")
         self.assertEqual(alpha.getpixel((64, 0)), 0)
         self.assertEqual(alpha.getpixel((64, 63)), 255)
+
+    def test_luma_auto_direction_uses_white_background_as_transparent(self):
+        image = Image.new("RGBA", (3, 1), (255, 255, 255, 255))
+        image.putpixel((1, 0), (220, 0, 20, 255))
+        image.putpixel((2, 0), (0, 0, 0, 255))
+
+        polarity = server.resolve_luma_polarity("auto", (255, 255, 255))
+        alpha = server.luminance_alpha_mask(image, 0, 85, 0.55, 1.7, polarity=polarity)
+
+        self.assertEqual(polarity, "dark")
+        self.assertEqual(alpha.getpixel((0, 0)), 0)
+        self.assertGreater(alpha.getpixel((1, 0)), 200)
+        self.assertEqual(alpha.getpixel((2, 0)), 255)
+
+    def test_luma_auto_direction_uses_black_background_as_transparent(self):
+        self.assertEqual(server.resolve_luma_polarity("auto", (0, 0, 0)), "bright")
+
+    def test_magic_upscale_falls_back_when_realesrgan_drops_alpha(self):
+        source = Image.new("RGBA", (20, 10), (0, 0, 0, 0))
+        for y in range(2, 8):
+            for x in range(3, 18):
+                source.putpixel((x, y), (20, 220, 140, 255))
+
+        original_runner = server.run_realesrgan_anime
+
+        def fake_runner(input_path: Path, output_path: Path, output_scale=None) -> None:
+            with Image.open(input_path) as image:
+                Image.new("RGBA", (image.width * 4, image.height * 4), (0, 0, 0, 0)).save(output_path)
+
+        server.run_realesrgan_anime = fake_runner
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                upscaled, source_size = server.build_magic_upscaled_frame(
+                    source,
+                    temp_path / "input.png",
+                    temp_path / "output.png",
+                )
+
+                self.assertEqual(source_size, source.size)
+                self.assertIsNotNone(upscaled.getchannel("A").getbbox())
+                with Image.open(temp_path / "output.png") as saved_output:
+                    self.assertIsNotNone(saved_output.convert("RGBA").getchannel("A").getbbox())
+                upscaled.close()
+        finally:
+            server.run_realesrgan_anime = original_runner
+
+    def test_magic_cache_skips_blank_frame_when_source_has_alpha(self):
+        old_jobs_dir = server.JOBS_DIR
+        old_magic_dir = server.MAGIC_DIR
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                server.JOBS_DIR = root / "jobs"
+                server.MAGIC_DIR = root / "magic"
+
+                job_id = "job-1"
+                processed_dir = server.job_dir(job_id) / "processed"
+                processed_dir.mkdir(parents=True)
+                source = Image.new("RGBA", (12, 12), (0, 0, 0, 0))
+                for y in range(3, 9):
+                    for x in range(3, 9):
+                        source.putpixel((x, y), (255, 255, 255, 255))
+                source.save(processed_dir / "frame_001.png")
+                server.save_job_manifest(
+                    job_id,
+                    {
+                        "frame_count": 1,
+                        "frames": [{"index": 0, "name": "frame_001.png"}],
+                    },
+                )
+
+                magic_root = server.MAGIC_DIR / "run-1-magic"
+                variants = {}
+                for config in server.MAGIC_VARIANTS:
+                    frames_dir = magic_root / str(config["dir"])
+                    frames_dir.mkdir(parents=True)
+                    Image.new("RGBA", (6, 6), (0, 0, 0, 0)).save(frames_dir / "frame_001.png")
+                    variants[str(config["key"])] = {
+                        "key": str(config["key"]),
+                        "frames_dir": str(frames_dir),
+                        "frames": [
+                            {
+                                "index": 0,
+                                "source_index": 0,
+                                "name": "frame_001.png",
+                                "width": 6,
+                                "height": 6,
+                            }
+                        ],
+                    }
+                (magic_root / "manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "magic_id": "run-1",
+                            "job_id": job_id,
+                            "model": server.REAL_ESRGAN_ANIME_MODEL,
+                            "resize_mode": "soft",
+                            "variants": variants,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                self.assertEqual(server.find_cached_magic_frames(job_id, "soft"), {})
+        finally:
+            server.JOBS_DIR = old_jobs_dir
+            server.MAGIC_DIR = old_magic_dir
+
+    def test_magic_preview_can_skip_realesrgan(self):
+        old_jobs_dir = server.JOBS_DIR
+        old_magic_dir = server.MAGIC_DIR
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                server.JOBS_DIR = root / "jobs"
+                server.MAGIC_DIR = root / "magic"
+
+                job_id = "job-2"
+                processed_dir = server.job_dir(job_id) / "processed"
+                processed_dir.mkdir(parents=True)
+                source = Image.new("RGBA", (24, 16), (0, 0, 0, 0))
+                for y in range(4, 12):
+                    for x in range(5, 20):
+                        source.putpixel((x, y), (40, 180, 255, 255))
+                source.save(processed_dir / "frame_001.png")
+                server.save_job_manifest(
+                    job_id,
+                    {
+                        "frame_count": 1,
+                        "frames": [
+                            {
+                                "index": 0,
+                                "name": "frame_001.png",
+                                "width": 24,
+                                "height": 16,
+                            }
+                        ],
+                    },
+                )
+
+                result = server.magic_preview_job(job_id, [0], "soft", use_realesrgan=False)
+
+                self.assertFalse(result["use_realesrgan"])
+                self.assertEqual(result["model"], "none")
+                self.assertEqual(result["upscale"], 1)
+                self.assertEqual(result["generated_count"], 1)
+                self.assertEqual(result["reused_count"], 0)
+                self.assertEqual(result["frame_count"], 1)
+                for variant in result["variants"].values():
+                    frame_path = Path(variant["frames_dir"]) / "frame_001.png"
+                    with Image.open(frame_path) as image:
+                        self.assertIsNotNone(image.convert("RGBA").getchannel("A").getbbox())
+        finally:
+            server.JOBS_DIR = old_jobs_dir
+            server.MAGIC_DIR = old_magic_dir
 
 
 if __name__ == "__main__":

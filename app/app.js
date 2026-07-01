@@ -21,6 +21,7 @@ const state = {
   magicPreview: null,
   magicInFlight: false,
   magicResizeMode: "hard",
+  magicUseRealesrgan: true,
   processPreviewZoom: {
     source: 100,
     processed: 100,
@@ -177,6 +178,7 @@ function bindElements() {
     "lumaWhiteInput",
     "lumaGammaInput",
     "lumaStrengthInput",
+    "lumaPolarityInput",
     "batchGreenToBlackInput",
     "batchGreenDesaturateInput",
     "batchSemiTransparentToBlackInput",
@@ -272,6 +274,7 @@ function bindElements() {
     "invertSelectionButton",
     "orderedSelectionInput",
     "exportButton",
+    "magicUseRealesrganInput",
     "magicResizeHardInput",
     "magicResizeSoftInput",
     "magicButton",
@@ -305,6 +308,18 @@ function setMagicResizeMode(mode, { clearExisting = true } = {}) {
   }
 }
 
+function setMagicUseRealesrgan(enabled, { clearExisting = true } = {}) {
+  const next = Boolean(enabled);
+  const changed = state.magicUseRealesrgan !== next;
+  state.magicUseRealesrgan = next;
+  if (els.magicUseRealesrganInput) {
+    els.magicUseRealesrganInput.checked = next;
+  }
+  if (changed && clearExisting) {
+    clearMagicPreview();
+  }
+}
+
 function bindEvents() {
   els.importPathButton.addEventListener("click", importFromPath);
   els.saveOutputPathButton.addEventListener("click", selectOutputPath);
@@ -318,19 +333,20 @@ function bindEvents() {
   els.processButton.addEventListener("click", processVideo);
   els.exportButton.addEventListener("click", exportFrames);
   els.magicButton.addEventListener("click", runMagicPreview);
+  els.magicUseRealesrganInput.addEventListener("change", () => {
+    setMagicUseRealesrgan(els.magicUseRealesrganInput.checked);
+  });
   els.magicResizeHardInput.addEventListener("change", () => {
     setMagicResizeMode(els.magicResizeHardInput.checked ? "hard" : "soft");
   });
   els.magicResizeSoftInput.addEventListener("change", () => {
     setMagicResizeMode(els.magicResizeSoftInput.checked ? "soft" : "hard");
   });
+  setMagicUseRealesrgan(state.magicUseRealesrgan, { clearExisting: false });
   setMagicResizeMode(state.magicResizeMode, { clearExisting: false });
   els.exportMagicFramesButton.addEventListener("click", () => exportMagicFrames("half", els.exportMagicFramesButton));
   els.exportMagicQuarterFramesButton.addEventListener("click", () => exportMagicFrames("quarter", els.exportMagicQuarterFramesButton));
   els.exportMagicEighthFramesButton.addEventListener("click", () => exportMagicFrames("eighth", els.exportMagicEighthFramesButton));
-  document.querySelectorAll("[data-luma-preset]").forEach((button) => {
-    button.addEventListener("click", () => applyLumaPreset(button.dataset.lumaPreset));
-  });
   bindUploadDropzone();
 
   bindTimePair("start", els.startRange, els.startInput, els.startStepDownButton, els.startStepUpButton);
@@ -494,6 +510,7 @@ function bindEvents() {
     els.lumaWhiteInput,
     els.lumaGammaInput,
     els.lumaStrengthInput,
+    els.lumaPolarityInput,
     els.batchGreenToBlackInput,
     els.batchGreenDesaturateInput,
     els.batchSemiTransparentToBlackInput,
@@ -822,47 +839,15 @@ function outputScalePercentFromLegacyTarget(targetSize) {
   return normalizeOutputScalePercent((target / height) * 100);
 }
 
-const LUMA_PRESETS = {
-  soft: {
-    label: "\u6E29\u548C",
-    black: 4,
-    white: 110,
-    gamma: 0.7,
-    strength: 1.3,
-  },
-  balanced: {
-    label: "\u4E2D\u7B49",
-    black: 0,
-    white: 85,
-    gamma: 0.55,
-    strength: 1.7,
-  },
-  strong: {
-    label: "\u5F3A\u529B",
-    black: 0,
-    white: 65,
-    gamma: 0.45,
-    strength: 2,
-  },
-};
-
-function applyLumaPreset(key) {
-  const preset = LUMA_PRESETS[key];
-  if (!preset) {
-    return;
-  }
-  els.chromaEnabledInput.checked = true;
-  els.matteModeInput.value = "birefnet_luma";
-  els.haloInput.value = "0";
-  els.corridorEnabledInput.checked = false;
-  els.aiResolutionInput.value = AI_RESOLUTION_AUTO;
-  els.lumaBlackInput.value = String(preset.black);
-  els.lumaWhiteInput.value = String(preset.white);
-  els.lumaGammaInput.value = String(preset.gamma);
-  els.lumaStrengthInput.value = String(preset.strength);
-  updateChromaVisibility();
-  persistSession();
-  setStatus(`\u5DF2\u5957\u7528\u4E3B\u4F53\u4FDD\u62A4\u9884\u8BBE\uFF1A${preset.label}\u3002`, "success");
+function applyAutomaticMatteDefaults() {
+  els.thresholdInput.value = "80";
+  els.softnessInput.value = "16";
+  els.despillInput.value = "0.6";
+  els.haloInput.value = "1";
+  els.lumaBlackInput.value = "0";
+  els.lumaWhiteInput.value = "85";
+  els.lumaGammaInput.value = "0.55";
+  els.lumaStrengthInput.value = "1.7";
 }
 
 function collectFormState() {
@@ -885,10 +870,11 @@ function collectFormState() {
     ai_device: els.aiDeviceInput.value,
     ai_resolution: normalizeAiResolution(els.aiResolutionInput.value),
     ai_resolution_mode: normalizeAiResolution(els.aiResolutionInput.value) === AI_RESOLUTION_AUTO ? "auto" : "manual",
-    luma_black: Number(els.lumaBlackInput.value || 24),
-    luma_white: Number(els.lumaWhiteInput.value || 230),
-    luma_gamma: Number(els.lumaGammaInput.value || 1),
-    luma_strength: Number(els.lumaStrengthInput.value || 1),
+    luma_black: Number(els.lumaBlackInput.value || 0),
+    luma_white: Number(els.lumaWhiteInput.value || 85),
+    luma_gamma: Number(els.lumaGammaInput.value || 0.55),
+    luma_strength: Number(els.lumaStrengthInput.value || 1.7),
+    luma_polarity: els.lumaPolarityInput.value || "auto",
     batch_green_to_black: els.batchGreenToBlackInput.checked,
     batch_green_desaturate: els.batchGreenDesaturateInput.checked,
     batch_semitransparent_to_black: els.batchSemiTransparentToBlackInput.checked,
@@ -904,6 +890,8 @@ function collectFormState() {
       mode: state.processPreviewBackground.mode,
       color: state.processPreviewBackground.color,
     },
+    magic_resize_mode: state.magicResizeMode,
+    magic_use_realesrgan: state.magicUseRealesrgan,
     segment: {
       start: Number(state.segment.start || 0),
       end: Number(state.segment.end || 0),
@@ -938,10 +926,11 @@ function collectProcessingPayload() {
     ai_model: els.aiModelInput.value,
     ai_device: els.aiDeviceInput.value,
     ai_resolution: normalizeAiResolution(els.aiResolutionInput.value),
-    luma_black: Number(els.lumaBlackInput.value || 24),
-    luma_white: Number(els.lumaWhiteInput.value || 230),
-    luma_gamma: Number(els.lumaGammaInput.value || 1),
-    luma_strength: Number(els.lumaStrengthInput.value || 1),
+    luma_black: Number(els.lumaBlackInput.value || 0),
+    luma_white: Number(els.lumaWhiteInput.value || 85),
+    luma_gamma: Number(els.lumaGammaInput.value || 0.55),
+    luma_strength: Number(els.lumaStrengthInput.value || 1.7),
+    luma_polarity: els.lumaPolarityInput.value || "auto",
     batch_green_to_black: els.batchGreenToBlackInput.checked,
     batch_green_desaturate: els.batchGreenDesaturateInput.checked,
     batch_semitransparent_to_black: els.batchSemiTransparentToBlackInput.checked,
@@ -982,10 +971,7 @@ function applyFormState(snapshot) {
   }
   if (snapshot.key_mode) els.keyModeInput.value = snapshot.key_mode;
   if (snapshot.manual_key_hex) els.manualKeyInput.value = snapshot.manual_key_hex;
-  if (snapshot.threshold != null) els.thresholdInput.value = String(snapshot.threshold);
-  if (snapshot.softness != null) els.softnessInput.value = String(snapshot.softness);
-  if (snapshot.despill_strength != null) els.despillInput.value = String(snapshot.despill_strength);
-  if (snapshot.halo_pixels != null) els.haloInput.value = String(snapshot.halo_pixels);
+  applyAutomaticMatteDefaults();
   els.corridorEnabledInput.checked = currentUsesCorridorKey();
   if (
     snapshot.corridorkey_screen &&
@@ -994,10 +980,14 @@ function applyFormState(snapshot) {
     els.corridorScreenInput.value = snapshot.corridorkey_screen;
   }
   enforceAutomaticAiSettings(false);
-  if (snapshot.luma_black != null) els.lumaBlackInput.value = String(snapshot.luma_black);
-  if (snapshot.luma_white != null) els.lumaWhiteInput.value = String(snapshot.luma_white);
-  if (snapshot.luma_gamma != null) els.lumaGammaInput.value = String(snapshot.luma_gamma);
-  if (snapshot.luma_strength != null) els.lumaStrengthInput.value = String(snapshot.luma_strength);
+  if (
+    snapshot.luma_polarity &&
+    [...els.lumaPolarityInput.options].some((option) => option.value === snapshot.luma_polarity)
+  ) {
+    els.lumaPolarityInput.value = snapshot.luma_polarity;
+  } else {
+    els.lumaPolarityInput.value = "auto";
+  }
   if (snapshot.batch_green_to_black != null) els.batchGreenToBlackInput.checked = Boolean(snapshot.batch_green_to_black);
   if (snapshot.batch_green_desaturate != null) {
     els.batchGreenDesaturateInput.checked = Boolean(snapshot.batch_green_desaturate);
@@ -1029,6 +1019,13 @@ function applyFormState(snapshot) {
     );
   } else {
     updateProcessPreviewBackground("checkerboard", state.processPreviewBackground.color, false);
+  }
+
+  if (snapshot.magic_resize_mode) {
+    setMagicResizeMode(snapshot.magic_resize_mode, { clearExisting: false });
+  }
+  if (snapshot.magic_use_realesrgan != null) {
+    setMagicUseRealesrgan(Boolean(snapshot.magic_use_realesrgan), { clearExisting: false });
   }
 
   if (snapshot.segment) {
@@ -1311,11 +1308,11 @@ function formatSourceModeLabel(ffmpegAccel, sourceMediaType = uploadMediaType())
 
 function formatMatteModeLabel(matte) {
   const mode = typeof matte === "string" ? matte : (matte?.mode || "chroma");
-  let label = "\u7EAF\u8272\u62A0\u56FE";
-  if (mode === "none") label = "\u4E0D\u62A0\u56FE";
-  if (mode === "birefnet") label = "BiRefNet";
-  if (mode === "corridorkey") label = "CorridorKey";
-  if (mode === "luma") label = "Luma";
+  let label = "chroma key";
+  if (mode === "none") label = "\u4E0D\u53BB\u80CC\u666F";
+  if (mode === "birefnet") label = "\u53EA\u7528 BiRefNet";
+  if (mode === "corridorkey") label = "\u53EA\u7528 CorridorKey";
+  if (mode === "luma") label = "\u53EA\u7528 Luma";
   if (mode === "birefnet_corridorkey") label = "BiRefNet \u7C97\u8499\u7248 / CorridorKey \u7CBE\u4FEE\u8FB9\u7F18";
   if (mode === "birefnet_corridorkey_key") label = "BiRefNet \u540E\u518D\u7528 CorridorKey \u6536\u7D27\u62A0\u56FE";
   if (mode === "birefnet_luma") label = "BiRefNet \u4FDD\u4E3B\u4F53 / Luma \u8865\u4EAE\u90E8";
@@ -1350,7 +1347,7 @@ function formatMatteDetail(matte) {
     parts.push(matte.model_label);
   }
   if (matteModeUsesLuma(matte.mode) && matte.luma_enabled) {
-    parts.push(`Luma ${matte.luma_black}-${matte.luma_white}`);
+    parts.push(matte.luma_resolved_polarity === "dark" ? "\u53BB\u767D\u5E95" : "\u53BB\u9ED1\u5E95");
   }
   if (matte.resolution) {
     parts.push(matteModeUsesBiRefNet(matte.mode) ? `AI ${matte.resolution}px` : `${matte.resolution}px`);
@@ -3054,14 +3051,19 @@ async function runMagicPreview() {
       const selectedFrames = getSelectedFrames();
       const resizeMode = normalizeMagicResizeMode(state.magicResizeMode);
       const resizeModeLabel = magicResizeModeLabel(resizeMode);
+      const useRealesrgan = Boolean(state.magicUseRealesrgan);
+      const processLabel = useRealesrgan
+        ? `Real-ESRGAN 超分后${resizeModeLabel}缩小`
+        : `跳过 Real-ESRGAN，直接${resizeModeLabel}缩小`;
       clearMagicPreview();
-      setStatus(`MAGIC \u6B63\u5728\u5904\u7406 ${selectedFrames.length} \u5E27\uFF1AReal-ESRGAN \u8D85\u5206\u540E${resizeModeLabel}\u7F29\u5C0F\u5230 1/2\u30011/4\u30011/8...`);
+      setStatus(`MAGIC \u6B63\u5728\u5904\u7406 ${selectedFrames.length} \u5E27\uFF1A${processLabel}\u5230 1/2\u30011/4\u30011/8...`);
       const data = await apiJson("/api/magic-preview", {
         method: "POST",
         body: {
           job_id: state.job.job_id,
           selected_indices: selectedFrames.map((frame) => frame.index),
           resize_mode: resizeMode,
+          use_realesrgan: useRealesrgan,
         },
       });
       state.magicPreview = data.magic;
@@ -3073,7 +3075,10 @@ async function runMagicPreview() {
           ? `\uFF0C\u672C\u6B21\u65B0\u751F\u6210 ${generatedCount} \u5E27\uFF0C\u590D\u7528\u7F13\u5B58 ${reusedCount} \u5E27`
           : `\uFF0C\u672C\u6B21\u5168\u90E8\u590D\u7528\u7F13\u5B58\uFF0C\u6CA1\u6709\u91CD\u65B0\u751F\u6210`
         : "";
-      setStatus(`MAGIC \u5B8C\u6210\uFF0C${data.magic.resize_mode_label || resizeModeLabel}\u7F29\u5C0F\uFF0C\u5DF2\u751F\u6210 ${data.magic.frame_count} \u5E27 1/2\u30011/4\u30011/8 \u5C3A\u5BF8\u5BF9\u6BD4\u9884\u89C8${cacheLabel}\u3002`, "success");
+      const outputProcessLabel = data.magic.use_realesrgan === false
+        ? `未使用 Real-ESRGAN，${data.magic.resize_mode_label || resizeModeLabel}缩小`
+        : `Real-ESRGAN 超分后${data.magic.resize_mode_label || resizeModeLabel}缩小`;
+      setStatus(`MAGIC \u5B8C\u6210\uFF0C${outputProcessLabel}\uFF0C\u5DF2\u751F\u6210 ${data.magic.frame_count} \u5E27 1/2\u30011/4\u30011/8 \u5C3A\u5BF8\u5BF9\u6BD4\u9884\u89C8${cacheLabel}\u3002`, "success");
     });
   } finally {
     state.magicInFlight = false;
@@ -3229,6 +3234,9 @@ function updateChromaVisibility() {
   els.matteModeInput.disabled = !els.chromaEnabledInput.checked;
   els.keyModeInput.closest(".field").style.display = usesKeyColorControls ? "" : "none";
   els.manualColorField.style.display = usesKeyColorControls && isManual ? "" : "none";
+  document.querySelectorAll(".matte-target-group").forEach((node) => {
+    node.style.display = usesKeyColorControls || isLuma ? "" : "none";
+  });
   document.querySelectorAll(".chroma-only").forEach((node) => {
     node.style.display = isChroma ? "" : "none";
   });

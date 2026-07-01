@@ -7,6 +7,8 @@ venv/
 env/
 
 work/
+.cache/
+outputs/
 
 .DS_Store
 Thumbs.db

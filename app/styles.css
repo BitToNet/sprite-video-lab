@@ -1262,10 +1262,43 @@ button:focus-visible,
 
 .export-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: end;
   justify-content: flex-end;
   gap: 14px;
   padding: 0 20px 20px;
+}
+
+.magic-controls {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-height: 66px;
+}
+
+.magic-realesrgan-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 66px;
+  padding: 6px 10px;
+  border: 2px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.magic-realesrgan-option input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
 }
 
 .magic-resize-mode {

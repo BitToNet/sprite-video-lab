@@ -85,14 +85,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$self = $PID;" ^
   "$port = [int]'%SPRITE_VIDEO_LAB_PORT%';" ^
   "Write-LaunchLog 'Scanning Win32_Process for this server.py path...';" ^
-  "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and $_.CommandLine -match $escaped } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} };" ^
+  "$servers = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and $_.CommandLine -match $escaped });" ^
+  "$servers | ForEach-Object { Write-LaunchLog ('Stopping stale server PID ' + $_.ProcessId + ': ' + $_.CommandLine); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };" ^
+  "Start-Sleep -Milliseconds 300;" ^
   "Write-LaunchLog 'Checking TCP listeners on the configured port...';" ^
-  "Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $ownerPid = $_.OwningProcess; $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -eq $ownerPid }; if ($proc.CommandLine -and $proc.CommandLine -match 'server\.py' -and ($proc.CommandLine -match 'sprite-video-lab' -or $proc.CommandLine -match 'SVL')) { try { Stop-Process -Id $ownerPid -Force -ErrorAction Stop } catch {} } }"
+  "$listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue);" ^
+  "foreach ($listener in $listeners) { $ownerPid = $listener.OwningProcess; $proc = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $ownerPid) -ErrorAction SilentlyContinue; if ($proc -and $proc.CommandLine -and ($proc.CommandLine -match $escaped -or ($proc.CommandLine -match 'server\.py' -and $proc.CommandLine -match 'sprite-video-lab'))) { Write-LaunchLog ('Stopping port owner PID ' + $ownerPid + ': ' + $proc.CommandLine); Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue } elseif ($proc) { Write-LaunchLog ('Port ' + $port + ' is occupied by non-Sprite process PID ' + $ownerPid + ': ' + $proc.CommandLine); exit 2 } else { Write-LaunchLog ('Port ' + $port + ' is occupied by PID ' + $ownerPid + ', but process details were unavailable.'); exit 2 } };" ^
+  "Start-Sleep -Milliseconds 300;" ^
+  "$remaining = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue);" ^
+  "if ($remaining.Count -gt 0) { foreach ($item in $remaining) { Write-LaunchLog ('Port still occupied by PID ' + $item.OwningProcess) }; exit 2 };" ^
+  "Write-LaunchLog 'Cleanup completed; port is free.'"
 if errorlevel 1 (
-  call :log "Stale process cleanup returned an errorlevel; continuing to startup."
-) else (
-  call :log "Stale process cleanup completed."
+  call :log "Stale process cleanup failed or port is still occupied."
+  echo.
+  echo Start failed while cleaning up old Sprite Video Lab processes.
+  echo See:
+  echo   %SVL_LAUNCH_LOG%
+  pause
+  exit /b 1
 )
+call :log "Stale process cleanup completed."
 
 call :log "Starting PowerShell server launcher..."
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_sprite_video_lab_server.ps1" ^

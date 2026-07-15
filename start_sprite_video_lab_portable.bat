@@ -39,10 +39,19 @@ if not exist "%SPRITE_VIDEO_LAB_FFMPEG_DIR%\ffmpeg.exe" (
 set "SVL_LOG_DIR=%APP_ROOT%work\logs"
 set "SVL_STDOUT_LOG=%SVL_LOG_DIR%\server.log"
 set "SVL_STDERR_LOG=%SVL_LOG_DIR%\server-error.log"
+set "SVL_LAUNCH_LOG=%SVL_LOG_DIR%\launcher.log"
 if not exist "%SVL_LOG_DIR%" mkdir "%SVL_LOG_DIR%" >nul 2>nul
+> "%SVL_LAUNCH_LOG%" echo [%DATE% %TIME%] Sprite Video Lab portable launcher started.
+>> "%SVL_LAUNCH_LOG%" echo [%DATE% %TIME%] Project directory: %CD%
+echo Sprite Video Lab portable launcher started.
+echo Logs: %SVL_LAUNCH_LOG%
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$launchLog = [System.IO.Path]::GetFullPath('%SVL_LAUNCH_LOG%');" ^
+  "function Write-LaunchLog([string]$message) { $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff') + '] cleanup: ' + $message; Write-Host $line; Add-Content -LiteralPath $launchLog -Value $line -Encoding UTF8 };" ^
+  "Write-LaunchLog 'PowerShell cleanup started.';" ^
   "$serverPath = [System.IO.Path]::GetFullPath('%~dp0server.py');" ^
   "$escaped = [Regex]::Escape($serverPath);" ^
+  "Write-LaunchLog 'Scanning Win32_Process for this server.py path...';" ^
   "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match $escaped } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }"
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_sprite_video_lab_server.ps1" ^
@@ -51,10 +60,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start_sprite_v
   -HostName "%SPRITE_VIDEO_LAB_HOST%" ^
   -Port "%SPRITE_VIDEO_LAB_PORT%" ^
   -StdoutLog "%SVL_STDOUT_LOG%" ^
-  -StderrLog "%SVL_STDERR_LOG%"
+  -StderrLog "%SVL_STDERR_LOG%" ^
+  -LaunchLog "%SVL_LAUNCH_LOG%"
 if errorlevel 1 (
   echo.
   echo Start failed. See:
+  echo   %SVL_LAUNCH_LOG%
   echo   %SVL_STDOUT_LOG%
   echo   %SVL_STDERR_LOG%
   pause

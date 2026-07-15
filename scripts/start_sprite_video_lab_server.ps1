@@ -4,10 +4,25 @@ param(
   [Parameter(Mandatory = $true)][string]$HostName,
   [Parameter(Mandatory = $true)][int]$Port,
   [Parameter(Mandatory = $true)][string]$StdoutLog,
-  [Parameter(Mandatory = $true)][string]$StderrLog
+  [Parameter(Mandatory = $true)][string]$StderrLog,
+  [Parameter(Mandatory = $false)][string]$LaunchLog = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+function Write-SvlLog {
+  param([Parameter(Mandatory = $true)][string]$Message)
+
+  $line = "[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff") + "] " + $Message
+  Write-Host $line
+  if ($script:LaunchLogPath) {
+    try {
+      Add-Content -LiteralPath $script:LaunchLogPath -Value $line -Encoding UTF8
+    } catch {
+      Write-Host ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff") + "] Failed to write launcher log: " + $_.Exception.Message)
+    }
+  }
+}
 
 function Test-SvlHealth {
   param(
@@ -51,13 +66,17 @@ function Write-PortOwners {
   param([int]$TargetPort)
 
   $listeners = @(Get-NetTCPConnection -LocalPort $TargetPort -ErrorAction SilentlyContinue)
-  $listeners | Format-Table -AutoSize | Out-String | Write-Host
+  $listeners | Format-Table -AutoSize | Out-String | ForEach-Object {
+    if (-not [string]::IsNullOrWhiteSpace($_)) {
+      Write-SvlLog $_
+    }
+  }
   $listeners |
     Select-Object -ExpandProperty OwningProcess -Unique |
     ForEach-Object {
       $owner = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_) -ErrorAction SilentlyContinue
       if ($owner) {
-        Write-Host ("Port owner PID " + $owner.ProcessId + ": " + $owner.CommandLine)
+        Write-SvlLog ("Port owner PID " + $owner.ProcessId + ": " + $owner.CommandLine)
       }
     }
 }
@@ -70,7 +89,25 @@ $logDir = Split-Path -Parent $stdoutLog
 if (-not (Test-Path -LiteralPath $logDir)) {
   New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 }
+$script:LaunchLogPath = ""
+if (-not [string]::IsNullOrWhiteSpace($LaunchLog)) {
+  $script:LaunchLogPath = [System.IO.Path]::GetFullPath($LaunchLog)
+  $launchLogDir = Split-Path -Parent $script:LaunchLogPath
+  if (-not (Test-Path -LiteralPath $launchLogDir)) {
+    New-Item -ItemType Directory -Path $launchLogDir -Force | Out-Null
+  }
+}
 
+Write-SvlLog "PowerShell server launcher started."
+Write-SvlLog ("PythonExe: " + $PythonExe)
+Write-SvlLog ("ServerPath: " + $serverPath)
+Write-SvlLog ("WorkingDirectory: " + $workDir)
+Write-SvlLog ("Host: " + $HostName)
+Write-SvlLog ("Port: " + $Port)
+Write-SvlLog ("StdoutLog: " + $stdoutLog)
+Write-SvlLog ("StderrLog: " + $stderrLog)
+
+Write-SvlLog "Clearing previous server stdout/stderr logs..."
 Remove-Item -LiteralPath $stdoutLog, $stderrLog -Force -ErrorAction SilentlyContinue
 
 $url = "http://$($HostName):$Port"
@@ -79,6 +116,7 @@ if ($HostName -eq "127.0.0.1") {
   $browserUrl = "http://localhost:$Port"
 }
 
+Write-SvlLog "Starting Python server process..."
 $proc = Start-Process `
   -FilePath $PythonExe `
   -ArgumentList @("-u", $serverPath, "--serve", "--host", $HostName, "--port", [string]$Port) `
@@ -87,42 +125,48 @@ $proc = Start-Process `
   -RedirectStandardError $stderrLog `
   -WindowStyle Hidden `
   -PassThru
+Write-SvlLog ("Python server process started. PID: " + $proc.Id)
 
 $ready = $false
 for ($i = 0; $i -lt 40; $i++) {
   Start-Sleep -Milliseconds 500
   if ($proc.HasExited) {
+    Write-SvlLog ("Python server process exited during readiness check. ExitCode: " + $proc.ExitCode)
     break
+  }
+  if ($i -eq 0 -or (($i + 1) % 5) -eq 0) {
+    Write-SvlLog ("Health check attempt " + ($i + 1) + "/40...")
   }
   if (Test-SvlHealth -TargetHost $HostName -TargetPort $Port) {
     $ready = $true
+    Write-SvlLog ("Health check succeeded on attempt " + ($i + 1) + ".")
     break
   }
 }
 
 if ($ready) {
-  Write-Host ("Sprite Video Lab running at " + $url)
-  Write-Host ("Opening " + $browserUrl)
-  Write-Host ("Logs: " + $stdoutLog)
+  Write-SvlLog ("Sprite Video Lab running at " + $url)
+  Write-SvlLog ("Opening " + $browserUrl)
+  Write-SvlLog ("Logs: " + $stdoutLog)
   Start-Process $browserUrl
   exit 0
 }
 
-Write-Host "Sprite Video Lab failed to become ready." -ForegroundColor Red
+Write-SvlLog "Sprite Video Lab failed to become ready."
 if ($proc.HasExited) {
-  Write-Host ("Server process exited with code " + $proc.ExitCode + ".")
+  Write-SvlLog ("Server process exited with code " + $proc.ExitCode + ".")
 } else {
-  Write-Host ("Server PID " + $proc.Id + " is still running, but raw TCP health check timed out.")
+  Write-SvlLog ("Server PID " + $proc.Id + " is still running, but raw TCP health check timed out.")
   Write-PortOwners -TargetPort $Port
 }
-Write-Host ("Stdout log: " + $stdoutLog)
-Write-Host ("Stderr log: " + $stderrLog)
+Write-SvlLog ("Stdout log: " + $stdoutLog)
+Write-SvlLog ("Stderr log: " + $stderrLog)
 if (Test-Path -LiteralPath $stdoutLog) {
-  Write-Host "--- server.log tail ---"
-  Get-Content -LiteralPath $stdoutLog -Tail 40
+  Write-SvlLog "--- server.log tail ---"
+  Get-Content -LiteralPath $stdoutLog -Tail 40 | ForEach-Object { Write-SvlLog $_ }
 }
 if (Test-Path -LiteralPath $stderrLog) {
-  Write-Host "--- server-error.log tail ---"
-  Get-Content -LiteralPath $stderrLog -Tail 80
+  Write-SvlLog "--- server-error.log tail ---"
+  Get-Content -LiteralPath $stderrLog -Tail 80 | ForEach-Object { Write-SvlLog $_ }
 }
 exit 1

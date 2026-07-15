@@ -62,6 +62,23 @@ function Test-SvlHealth {
   }
 }
 
+function Test-SvlServerLogReady {
+  param(
+    [Parameter(Mandatory = $true)][string]$TargetLog,
+    [Parameter(Mandatory = $true)][string]$TargetUrl
+  )
+
+  if (-not (Test-Path -LiteralPath $TargetLog)) {
+    return $false
+  }
+  try {
+    $recent = @(Get-Content -LiteralPath $TargetLog -Tail 20 -ErrorAction Stop)
+    return ($recent | Where-Object { $_ -like ("*Sprite Video Lab running at " + $TargetUrl + "*") }).Count -gt 0
+  } catch {
+    return $false
+  }
+}
+
 function Write-PortOwners {
   param([int]$TargetPort)
 
@@ -147,6 +164,11 @@ for ($i = 0; $i -lt 40; $i++) {
   if (Test-SvlHealth -TargetHost $HostName -TargetPort $Port) {
     $ready = $true
     Write-SvlLog ("Health check succeeded on attempt " + ($i + 1) + ".")
+    break
+  }
+  if (Test-SvlServerLogReady -TargetLog $stdoutLog -TargetUrl $url) {
+    $ready = $true
+    Write-SvlLog ("Server log readiness confirmed on attempt " + ($i + 1) + ".")
     break
   }
 }

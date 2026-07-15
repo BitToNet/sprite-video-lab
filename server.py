@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+import os
 
 
 def _early_startup_log(message: str) -> None:
@@ -9,14 +10,15 @@ def _early_startup_log(message: str) -> None:
 
 
 _early_startup_log("python entered server.py")
-try:
-    import faulthandler
+if os.environ.get("SPRITE_VIDEO_LAB_STARTUP_TRACE") == "1":
+    try:
+        import faulthandler
 
-    faulthandler.enable(file=sys.stderr)
-    faulthandler.dump_traceback_later(30, repeat=True, file=sys.stderr)
-    _early_startup_log("faulthandler enabled")
-except Exception as exc:
-    _early_startup_log(f"faulthandler unavailable: {exc}")
+        faulthandler.enable(file=sys.stderr)
+        faulthandler.dump_traceback_later(30, repeat=True, file=sys.stderr)
+        _early_startup_log("faulthandler enabled")
+    except Exception as exc:
+        _early_startup_log(f"faulthandler unavailable: {exc}")
 
 import argparse
 from email.parser import BytesParser
@@ -25,7 +27,6 @@ from io import BytesIO
 import json
 import math
 import mimetypes
-import os
 import re
 import shutil
 import subprocess

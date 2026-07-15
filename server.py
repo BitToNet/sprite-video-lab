@@ -29,6 +29,7 @@ import math
 import mimetypes
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import uuid
@@ -4822,16 +4823,37 @@ class AppHandler(BaseHTTPRequestHandler):
             shutil.copyfileobj(handle, self.wfile)
 
 
+def serve_accept_loop(server: ThreadingHTTPServer) -> None:
+    server.socket.settimeout(0.5)
+    while True:
+        try:
+            request, client_address = server.get_request()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+
+        try:
+            if server.verify_request(request, client_address):
+                server.process_request(request, client_address)
+            else:
+                server.shutdown_request(request)
+        except Exception:
+            server.handle_error(request, client_address)
+            server.shutdown_request(request)
+
+
 def serve_once(host: str, port: int) -> None:
     startup_log(f"serve_once requested for {host}:{port}")
     ensure_runtime_dirs()
     startup_log(f"binding HTTP server on {host}:{port}")
     server = ThreadingHTTPServer((host, port), AppHandler)
+    server.daemon_threads = True
     startup_log(f"HTTP server bound on {host}:{port}")
     print(f"Sprite Video Lab running at http://{host}:{port}", flush=True)
     try:
-        startup_log("entering serve_forever")
-        server.serve_forever()
+        startup_log("entering accept loop")
+        serve_accept_loop(server)
     except KeyboardInterrupt:
         pass
     finally:

@@ -41,6 +41,10 @@ exit /b 1
 
 :python_ready
 set "SPRITE_VIDEO_LAB_PYTHON=%PYTHON_EXE%"
+set "SVL_LOG_DIR=%~dp0work\logs"
+set "SVL_STDOUT_LOG=%SVL_LOG_DIR%\server.log"
+set "SVL_STDERR_LOG=%SVL_LOG_DIR%\server-error.log"
+if not exist "%SVL_LOG_DIR%" mkdir "%SVL_LOG_DIR%" >nul 2>nul
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$serverPath = [System.IO.Path]::GetFullPath('%~dp0server.py');" ^
   "$escaped = [Regex]::Escape($serverPath);" ^
@@ -49,6 +53,34 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -and $_.CommandLine -match $escaped } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} };" ^
   "Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $ownerPid = $_.OwningProcess; $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -eq $ownerPid }; if ($proc.CommandLine -and $proc.CommandLine -match 'server\.py' -and ($proc.CommandLine -match 'sprite-video-lab' -or $proc.CommandLine -match 'SVL')) { try { Stop-Process -Id $ownerPid -Force -ErrorAction Stop } catch {} } }"
 
-start "Sprite Video Lab Server" "%PYTHON_EXE%" "%~dp0server.py" --serve --host "%SPRITE_VIDEO_LAB_HOST%" --port "%SPRITE_VIDEO_LAB_PORT%"
-timeout /t 2 >nul
-start "" http://%SPRITE_VIDEO_LAB_HOST%:%SPRITE_VIDEO_LAB_PORT%
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference = 'Stop';" ^
+  "$python = '%PYTHON_EXE%';" ^
+  "$serverPath = [System.IO.Path]::GetFullPath('%~dp0server.py');" ^
+  "$workDir = [System.IO.Path]::GetFullPath('%~dp0');" ^
+  "$hostName = '%SPRITE_VIDEO_LAB_HOST%';" ^
+  "$port = [int]'%SPRITE_VIDEO_LAB_PORT%';" ^
+  "$url = 'http://' + $hostName + ':' + $port;" ^
+  "$healthUrl = $url + '/api/app-version';" ^
+  "$stdoutLog = [System.IO.Path]::GetFullPath('%SVL_STDOUT_LOG%');" ^
+  "$stderrLog = [System.IO.Path]::GetFullPath('%SVL_STDERR_LOG%');" ^
+  "Remove-Item -LiteralPath $stdoutLog,$stderrLog -Force -ErrorAction SilentlyContinue;" ^
+  "$proc = Start-Process -FilePath $python -ArgumentList @('-u', $serverPath, '--serve', '--host', $hostName, '--port', [string]$port) -WorkingDirectory $workDir -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -WindowStyle Hidden -PassThru;" ^
+  "$ready = $false;" ^
+  "for ($i = 0; $i -lt 40; $i++) { Start-Sleep -Milliseconds 500; if ($proc.HasExited) { break }; try { $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2; if ($response.StatusCode -eq 200) { $ready = $true; break } } catch {} };" ^
+  "if ($ready) { Write-Host ('Sprite Video Lab running at ' + $url); Write-Host ('Logs: ' + $stdoutLog); Start-Process $url; exit 0 };" ^
+  "Write-Host 'Sprite Video Lab failed to become ready.' -ForegroundColor Red;" ^
+  "if ($proc.HasExited) { Write-Host ('Server process exited with code ' + $proc.ExitCode + '.') } else { Write-Host ('Server PID ' + $proc.Id + ' is still running, but health check timed out.'); Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String | Write-Host };" ^
+  "Write-Host ('Stdout log: ' + $stdoutLog);" ^
+  "Write-Host ('Stderr log: ' + $stderrLog);" ^
+  "if (Test-Path -LiteralPath $stdoutLog) { Write-Host '--- server.log tail ---'; Get-Content -LiteralPath $stdoutLog -Tail 40 };" ^
+  "if (Test-Path -LiteralPath $stderrLog) { Write-Host '--- server-error.log tail ---'; Get-Content -LiteralPath $stderrLog -Tail 80 };" ^
+  "exit 1"
+if errorlevel 1 (
+  echo.
+  echo Start failed. See:
+  echo   %SVL_STDOUT_LOG%
+  echo   %SVL_STDERR_LOG%
+  pause
+  exit /b 1
+)

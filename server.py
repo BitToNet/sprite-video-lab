@@ -4437,6 +4437,29 @@ class AppHandler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
+    def do_HEAD(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
+            self.serve_app_file(APP_DIR / "index.html", content_type="text/html; charset=utf-8", send_body=False)
+            return
+        if parsed.path.startswith("/app/"):
+            relative = parsed.path.removeprefix("/app/")
+            self.serve_app_file(APP_DIR / relative, send_body=False)
+            return
+        if parsed.path.startswith("/media/upload/"):
+            upload_id = parsed.path.removeprefix("/media/upload/")
+            self.serve_media_file(source_video_path(upload_id), allow_range=True, send_body=False)
+            return
+        if parsed.path.startswith("/work/"):
+            relative = parsed.path.removeprefix("/work/")
+            self.serve_work_file((WORK_DIR / relative).resolve(), send_body=False)
+            return
+        if parsed.path.startswith("/exports/"):
+            relative = parsed.path.removeprefix("/exports/")
+            self.serve_export_file((configured_exports_dir() / relative).resolve(), send_body=False)
+            return
+        self.send_error(HTTPStatus.NOT_FOUND)
+
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
@@ -4661,27 +4684,51 @@ class AppHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length > 0 else b""
         return parse_multipart_form(body, self.headers.get("Content-Type", ""))
 
-    def serve_app_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
+    def serve_app_file(
+        self,
+        path: Path,
+        content_type: str | None = None,
+        allow_range: bool = False,
+        send_body: bool = True,
+    ) -> None:
         if not is_within_root(path, APP_DIR):
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        self.serve_file(path, content_type=content_type, allow_range=allow_range, cache_control="no-store")
+        self.serve_file(path, content_type=content_type, allow_range=allow_range, cache_control="no-store", send_body=send_body)
 
-    def serve_work_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
+    def serve_work_file(
+        self,
+        path: Path,
+        content_type: str | None = None,
+        allow_range: bool = False,
+        send_body: bool = True,
+    ) -> None:
         if not is_within_root(path, WORK_DIR):
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        self.serve_file(path, content_type=content_type, allow_range=allow_range)
+        self.serve_file(path, content_type=content_type, allow_range=allow_range, send_body=send_body)
 
-    def serve_export_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
+    def serve_export_file(
+        self,
+        path: Path,
+        content_type: str | None = None,
+        allow_range: bool = False,
+        send_body: bool = True,
+    ) -> None:
         export_root = configured_exports_dir()
         if not is_within_root(path, export_root):
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        self.serve_file(path, content_type=content_type, allow_range=allow_range)
+        self.serve_file(path, content_type=content_type, allow_range=allow_range, send_body=send_body)
 
-    def serve_media_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
-        self.serve_file(path, content_type=content_type, allow_range=allow_range)
+    def serve_media_file(
+        self,
+        path: Path,
+        content_type: str | None = None,
+        allow_range: bool = False,
+        send_body: bool = True,
+    ) -> None:
+        self.serve_file(path, content_type=content_type, allow_range=allow_range, send_body=send_body)
 
     def serve_file(
         self,
@@ -4689,6 +4736,7 @@ class AppHandler(BaseHTTPRequestHandler):
         content_type: str | None = None,
         allow_range: bool = False,
         cache_control: str | None = None,
+        send_body: bool = True,
     ) -> None:
         path = path.resolve()
         if not path.exists() or not path.is_file():
@@ -4716,6 +4764,8 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.send_header("Content-Length", str(length))
             self.end_headers()
+            if not send_body:
+                return
             with path.open("rb") as handle:
                 handle.seek(start)
                 self.wfile.write(handle.read(length))
@@ -4729,6 +4779,8 @@ class AppHandler(BaseHTTPRequestHandler):
         if allow_range:
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
+        if not send_body:
+            return
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile)
 

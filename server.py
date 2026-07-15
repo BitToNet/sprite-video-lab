@@ -160,16 +160,25 @@ _BIREFNET_MODEL_CACHE: dict[tuple[str, str], object] = {}
 _CORRIDORKEY_ENGINE_CACHE: dict[tuple[str, str], object] = {}
 
 
+def startup_log(message: str) -> None:
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] startup: {message}", file=sys.stderr, flush=True)
+
+
 def ensure_runtime_dirs() -> None:
+    startup_log(f"ensuring runtime directories under {WORK_DIR}")
     for directory in (APP_DIR, WORK_DIR, UPLOADS_DIR, JOBS_DIR, EXPORTS_DIR, PREVIEWS_DIR, LINE_CLEANER_DIR, MAGIC_DIR):
+        startup_log(f"ensuring directory: {directory}")
         directory.mkdir(parents=True, exist_ok=True)
+    startup_log("checking legacy settings migration")
     migrate_legacy_settings()
+    startup_log("runtime directories ready")
 
 
 def migrate_legacy_settings() -> None:
     if SETTINGS_PATH.resolve() == LEGACY_SETTINGS_PATH.resolve() or SETTINGS_PATH.exists() or not LEGACY_SETTINGS_PATH.exists():
         return
     try:
+        startup_log(f"migrating legacy settings from {LEGACY_SETTINGS_PATH} to {SETTINGS_PATH}")
         settings = json.loads(LEGACY_SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return
@@ -4795,14 +4804,19 @@ class AppHandler(BaseHTTPRequestHandler):
 
 
 def serve_once(host: str, port: int) -> None:
+    startup_log(f"serve_once requested for {host}:{port}")
     ensure_runtime_dirs()
+    startup_log(f"binding HTTP server on {host}:{port}")
     server = ThreadingHTTPServer((host, port), AppHandler)
-    print(f"Sprite Video Lab running at http://{host}:{port}")
+    startup_log(f"HTTP server bound on {host}:{port}")
+    print(f"Sprite Video Lab running at http://{host}:{port}", flush=True)
     try:
+        startup_log("entering serve_forever")
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        startup_log("closing HTTP server")
         server.server_close()
 
 
@@ -4818,6 +4832,7 @@ def stop_child_process(process: subprocess.Popen | None) -> None:
 
 
 def run_with_reloader(host: str, port: int) -> None:
+    startup_log(f"run_with_reloader requested for {host}:{port}")
     ensure_runtime_dirs()
     watch_state = watch_snapshot()
     child: subprocess.Popen | None = None
@@ -4851,6 +4866,7 @@ def run_with_reloader(host: str, port: int) -> None:
 
 
 def main() -> None:
+    startup_log("main entered")
     parser = argparse.ArgumentParser(description="Run Sprite Video Lab.")
     parser.add_argument("--serve", action="store_true", help="Run the HTTP server once without file watching.")
     parser.add_argument("--host", default=None, help=f"Host to bind. Defaults to ${HOST_ENV} or {DEFAULT_HOST}.")
@@ -4858,6 +4874,7 @@ def main() -> None:
     args = parser.parse_args()
     host = configured_host(args.host)
     port = configured_port(args.port)
+    startup_log(f"parsed args: serve={args.serve}, host={host}, port={port}")
     if args.serve:
         serve_once(host, port)
         return
@@ -4865,4 +4882,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    startup_log("module loaded")
     main()

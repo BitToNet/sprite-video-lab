@@ -24,7 +24,7 @@ if "%SVL_HAS_E_DRIVE%"=="1" (
   call :log "E: drive not found; using project-local defaults unless environment variables override them."
 )
 
-if "%SPRITE_VIDEO_LAB_WORK_DIR%"=="" if "%SVL_HAS_E_DRIVE%"=="1" set "SPRITE_VIDEO_LAB_WORK_DIR=E:\sprite-video-lab-work"
+if "%SPRITE_VIDEO_LAB_WORK_DIR%"=="" set "SPRITE_VIDEO_LAB_WORK_DIR=%~dp0work"
 if "%SPRITE_VIDEO_LAB_AI_MODEL_CACHE%"=="" if "%SVL_HAS_E_DRIVE%"=="1" set "SPRITE_VIDEO_LAB_AI_MODEL_CACHE=E:\sprite-video-lab-models\huggingface"
 if "%SPRITE_VIDEO_LAB_CORRIDORKEY_ROOT%"=="" if "%SVL_HAS_E_DRIVE%"=="1" set "SPRITE_VIDEO_LAB_CORRIDORKEY_ROOT=E:\sprite-video-lab-models\CorridorKey"
 if "%HF_HOME%"=="" set "HF_HOME=%SPRITE_VIDEO_LAB_AI_MODEL_CACHE%"

@@ -53,7 +53,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$hostName = '%SPRITE_VIDEO_LAB_HOST%';" ^
   "$port = [int]'%SPRITE_VIDEO_LAB_PORT%';" ^
   "$url = 'http://' + $hostName + ':' + $port;" ^
-  "$healthUrl = $url + '/api/app-version';" ^
+  "$healthUrl = $url + '/api/health';" ^
   "$stdoutLog = [System.IO.Path]::GetFullPath('%SVL_STDOUT_LOG%');" ^
   "$stderrLog = [System.IO.Path]::GetFullPath('%SVL_STDERR_LOG%');" ^
   "Remove-Item -LiteralPath $stdoutLog,$stderrLog -Force -ErrorAction SilentlyContinue;" ^
@@ -62,7 +62,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "for ($i = 0; $i -lt 40; $i++) { Start-Sleep -Milliseconds 500; if ($proc.HasExited) { break }; try { $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 2; if ($response.StatusCode -eq 200) { $ready = $true; break } } catch {} };" ^
   "if ($ready) { Write-Host ('Sprite Video Lab running at ' + $url); Write-Host ('Logs: ' + $stdoutLog); Start-Process $url; exit 0 };" ^
   "Write-Host 'Sprite Video Lab failed to become ready.' -ForegroundColor Red;" ^
-  "if ($proc.HasExited) { Write-Host ('Server process exited with code ' + $proc.ExitCode + '.') } else { Write-Host ('Server PID ' + $proc.Id + ' is still running, but health check timed out.'); Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String | Write-Host };" ^
+  "if ($proc.HasExited) { Write-Host ('Server process exited with code ' + $proc.ExitCode + '.') } else { Write-Host ('Server PID ' + $proc.Id + ' is still running, but health check timed out.'); $listeners = @(Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue); $listeners | Format-Table -AutoSize | Out-String | Write-Host; $listeners | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $owner = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $_) -ErrorAction SilentlyContinue; if ($owner) { Write-Host ('Port owner PID ' + $owner.ProcessId + ': ' + $owner.CommandLine) } } };" ^
   "Write-Host ('Stdout log: ' + $stdoutLog);" ^
   "Write-Host ('Stderr log: ' + $stderrLog);" ^
   "if (Test-Path -LiteralPath $stdoutLog) { Write-Host '--- server.log tail ---'; Get-Content -LiteralPath $stdoutLog -Tail 40 };" ^

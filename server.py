@@ -4388,6 +4388,9 @@ class AppHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args) -> None:
         return
 
+    def debug_log(self, message: str) -> None:
+        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}", file=sys.stderr, flush=True)
+
     def send_json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
         body = json_bytes(payload)
         self.send_response(status)
@@ -4401,6 +4404,10 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        self.debug_log(f"GET {parsed.path}")
+        if parsed.path == "/api/health":
+            self.send_json({"ok": True})
+            return
         if parsed.path == "/api/app-version":
             self.send_json(
                 {
@@ -4439,6 +4446,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self) -> None:
         parsed = urlparse(self.path)
+        self.debug_log(f"HEAD {parsed.path}")
         if parsed.path == "/":
             self.serve_app_file(APP_DIR / "index.html", content_type="text/html; charset=utf-8", send_body=False)
             return
@@ -4462,6 +4470,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        self.debug_log(f"POST {parsed.path}")
         try:
             if parsed.path == "/api/import-path":
                 payload = self.read_json_body()

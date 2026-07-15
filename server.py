@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import cgi
+from email.parser import BytesParser
+from email.policy import default as EMAIL_POLICY
+from io import BytesIO
 import json
 import math
 import mimetypes
@@ -18,7 +20,7 @@ from fractions import Fraction
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from PIL import Image, ImageChops, ImageFilter
 
@@ -3139,7 +3141,83 @@ def natural_sort_key(value: str) -> list[object]:
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]
 
 
-def field_storage_items(form: cgi.FieldStorage, key: str) -> list:
+class MultipartFormItem:
+    def __init__(self, name: str, value: str = "", filename: str = "", content_type: str = "", data: bytes = b"") -> None:
+        self.name = name
+        self.value = value
+        self.filename = filename
+        self.type = content_type
+        self.file = BytesIO(data) if filename else None
+
+
+class MultipartForm:
+    def __init__(self) -> None:
+        self._fields: dict[str, list[MultipartFormItem]] = {}
+
+    def add(self, item: MultipartFormItem) -> None:
+        self._fields.setdefault(item.name, []).append(item)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._fields
+
+    def __getitem__(self, key: str):
+        values = self._fields[key]
+        return values if len(values) > 1 else values[0]
+
+    def getfirst(self, key: str, default=None):
+        values = self._fields.get(key)
+        if not values:
+            return default
+        return values[0].value
+
+
+def decode_form_value(data: bytes, content_type: str) -> str:
+    charset = "utf-8"
+    match = re.search(r"charset=([^;\s]+)", content_type, flags=re.IGNORECASE)
+    if match:
+        charset = match.group(1).strip("\"'")
+    return data.decode(charset, errors="replace")
+
+
+def parse_multipart_form(body: bytes, content_type: str) -> MultipartForm:
+    form = MultipartForm()
+    content_type = content_type or ""
+    if content_type.lower().startswith("application/x-www-form-urlencoded"):
+        parsed = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=True)
+        for key, values in parsed.items():
+            for value in values:
+                form.add(MultipartFormItem(name=key, value=value))
+        return form
+
+    if "multipart/form-data" not in content_type.lower():
+        raise ValueError("expected multipart/form-data")
+
+    raw_message = (
+        f"Content-Type: {content_type}\r\n"
+        "MIME-Version: 1.0\r\n"
+        "\r\n"
+    ).encode("utf-8") + body
+    message = BytesParser(policy=EMAIL_POLICY).parsebytes(raw_message)
+    if not message.is_multipart():
+        raise ValueError("invalid multipart/form-data body")
+
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        filename = part.get_filename() or ""
+        part_type = part.get_content_type() or ""
+        data = part.get_payload(decode=True) or b""
+        if filename:
+            form.add(MultipartFormItem(name=name, filename=filename, content_type=part_type, data=data))
+        else:
+            form.add(MultipartFormItem(name=name, value=decode_form_value(data, part.get("Content-Type", ""))))
+    return form
+
+
+def field_storage_items(form: MultipartForm, key: str) -> list:
     if key not in form:
         return []
     value = form[key]
@@ -4369,15 +4447,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "upload": result})
                 return
             if parsed.path == "/api/upload":
-                form = cgi.FieldStorage(
-                    fp=self.rfile,
-                    headers=self.headers,
-                    environ={
-                        "REQUEST_METHOD": "POST",
-                        "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                        "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
-                    },
-                )
+                form = self.read_form_body()
                 file_items = field_storage_items(form, "video")
                 if not file_items:
                     raise ValueError("media file missing")
@@ -4385,28 +4455,12 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "upload": result})
                 return
             if parsed.path == "/api/import-animation":
-                form = cgi.FieldStorage(
-                    fp=self.rfile,
-                    headers=self.headers,
-                    environ={
-                        "REQUEST_METHOD": "POST",
-                        "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                        "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
-                    },
-                )
+                form = self.read_form_body()
                 result = import_animation_frames_to_job(field_storage_items(form, "frames"))
                 self.send_json({"ok": True, "job": result})
                 return
             if parsed.path == "/api/line-cleaner-process":
-                form = cgi.FieldStorage(
-                    fp=self.rfile,
-                    headers=self.headers,
-                    environ={
-                        "REQUEST_METHOD": "POST",
-                        "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-                        "CONTENT_LENGTH": self.headers.get("Content-Length", "0"),
-                    },
-                )
+                form = self.read_form_body()
                 result = process_line_cleaner_frames(
                     field_storage_items(form, "frames"),
                     method=str(form.getfirst("method", "classic")),
@@ -4601,6 +4655,11 @@ class AppHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length) if length > 0 else b"{}"
         return json.loads(raw.decode("utf-8"))
+
+    def read_form_body(self) -> MultipartForm:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length) if length > 0 else b""
+        return parse_multipart_form(body, self.headers.get("Content-Type", ""))
 
     def serve_app_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
         if not is_within_root(path, APP_DIR):

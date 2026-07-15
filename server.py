@@ -1,5 +1,23 @@
 from __future__ import annotations
 
+import sys
+import time
+
+
+def _early_startup_log(message: str) -> None:
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] startup: {message}", file=sys.stderr, flush=True)
+
+
+_early_startup_log("python entered server.py")
+try:
+    import faulthandler
+
+    faulthandler.enable(file=sys.stderr)
+    faulthandler.dump_traceback_later(30, repeat=True, file=sys.stderr)
+    _early_startup_log("faulthandler enabled")
+except Exception as exc:
+    _early_startup_log(f"faulthandler unavailable: {exc}")
+
 import argparse
 from email.parser import BytesParser
 from email.policy import default as EMAIL_POLICY
@@ -11,9 +29,7 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
-import time
 import uuid
 from datetime import datetime
 from fractions import Fraction
@@ -22,7 +38,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+_early_startup_log("stdlib imports complete; importing Pillow")
 from PIL import Image, ImageChops, ImageFilter
+_early_startup_log("Pillow import complete")
 
 
 ROOT_DIR = Path(__file__).resolve().parent

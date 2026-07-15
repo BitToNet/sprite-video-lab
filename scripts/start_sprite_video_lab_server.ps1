@@ -136,6 +136,13 @@ for ($i = 0; $i -lt 40; $i++) {
   }
   if ($i -eq 0 -or (($i + 1) % 5) -eq 0) {
     Write-SvlLog ("Health check attempt " + ($i + 1) + "/40...")
+    if (Test-Path -LiteralPath $stderrLog) {
+      $recentStderr = @(Get-Content -LiteralPath $stderrLog -Tail 12 -ErrorAction SilentlyContinue)
+      if ($recentStderr.Count -gt 0) {
+        Write-SvlLog "--- recent server-error.log ---"
+        $recentStderr | ForEach-Object { Write-SvlLog $_ }
+      }
+    }
   }
   if (Test-SvlHealth -TargetHost $HostName -TargetPort $Port) {
     $ready = $true

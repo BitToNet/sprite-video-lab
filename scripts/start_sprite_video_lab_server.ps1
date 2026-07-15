@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Write-SvlLog {
-  param([Parameter(Mandatory = $true)][string]$Message)
+  param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Message)
 
   $line = "[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff") + "] " + $Message
   Write-Host $line
@@ -157,7 +157,7 @@ for ($i = 0; $i -lt 40; $i++) {
       $recentStderr = @(Get-Content -LiteralPath $stderrLog -Tail 12 -ErrorAction SilentlyContinue)
       if ($recentStderr.Count -gt 0) {
         Write-SvlLog "--- recent server-error.log ---"
-        $recentStderr | ForEach-Object { Write-SvlLog $_ }
+        $recentStderr | ForEach-Object { Write-SvlLog ([string]$_) }
       }
     }
   }
@@ -192,10 +192,10 @@ Write-SvlLog ("Stdout log: " + $stdoutLog)
 Write-SvlLog ("Stderr log: " + $stderrLog)
 if (Test-Path -LiteralPath $stdoutLog) {
   Write-SvlLog "--- server.log tail ---"
-  Get-Content -LiteralPath $stdoutLog -Tail 40 | ForEach-Object { Write-SvlLog $_ }
+  Get-Content -LiteralPath $stdoutLog -Tail 40 | ForEach-Object { Write-SvlLog ([string]$_) }
 }
 if (Test-Path -LiteralPath $stderrLog) {
   Write-SvlLog "--- server-error.log tail ---"
-  Get-Content -LiteralPath $stderrLog -Tail 80 | ForEach-Object { Write-SvlLog $_ }
+  Get-Content -LiteralPath $stderrLog -Tail 80 | ForEach-Object { Write-SvlLog ([string]$_) }
 }
 exit 1

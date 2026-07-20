@@ -8,6 +8,7 @@ safetensors
 kornia
 einops
 opencv-python
-numpy<2
+numpy>=1.26,<2; python_version < "3.14"
+numpy>=2.1,<3; python_version >= "3.14"
 scipy
 scikit-image

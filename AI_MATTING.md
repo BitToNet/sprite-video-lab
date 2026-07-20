@@ -45,12 +45,24 @@ Run:
 setup_ai_runtime.bat
 ```
 
-The script installs the base app dependencies, optional AI dependencies, a CUDA-enabled PyTorch wheel for Windows, and clones CorridorKey when git is available. If CUDA is not available on your machine, the app can still run in compatibility mode, but AI matting will be slower.
+On macOS, run:
+
+```bash
+./setup_ai_runtime.command
+```
+
+The setup scripts install the base app dependencies, optional AI dependencies, and clone CorridorKey when git is available. The Windows script also installs a CUDA-enabled PyTorch wheel. If CUDA is not available on your machine, the app can still run in compatibility mode, but AI matting will be slower.
 
 Then start the app as usual:
 
 ```bat
 start_sprite_video_lab.bat
+```
+
+On macOS:
+
+```bash
+./start_sprite_video_lab.command
 ```
 
 ## Tuning

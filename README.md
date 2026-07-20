@@ -151,6 +151,7 @@ AGENT_INSTALL.md                  给 agent 执行的安装和启动说明
 WINDOWS_INSTALL.zh-CN.md          Windows 中文安装说明
 requirements.txt                  基础运行依赖
 requirements-ai.txt               可选 AI 抠图依赖
+setup_ai_runtime.command          macOS AI 环境安装脚本
 setup_ai_runtime.bat              Windows AI 环境安装脚本
 start_sprite_video_lab.bat        Windows 启动器
 stop_sprite_video_lab.bat         Windows 关闭器

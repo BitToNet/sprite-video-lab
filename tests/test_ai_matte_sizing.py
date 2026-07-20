@@ -44,6 +44,72 @@ class MultipartFormTests(unittest.TestCase):
 
 
 class AiMatteSizingTests(unittest.TestCase):
+    def test_prepare_birefnet_model_dtype_uses_float32_for_mixed_cpu_model(self):
+        class FakeTorch:
+            float16 = "float16"
+            bfloat16 = "bfloat16"
+            float32 = "float32"
+
+        class FakeTensor:
+            def __init__(self, dtype):
+                self.dtype = dtype
+
+            def is_floating_point(self):
+                return True
+
+        class FakeModel:
+            def __init__(self):
+                self.converted_dtype = None
+
+            def parameters(self):
+                return iter([FakeTensor(FakeTorch.float16)])
+
+            def buffers(self):
+                return iter([FakeTensor(FakeTorch.float32)])
+
+            def to(self, dtype=None):
+                self.converted_dtype = dtype
+                return self
+
+        model = FakeModel()
+
+        dtype = server.prepare_birefnet_model_dtype(FakeTorch, model, "cpu")
+
+        self.assertEqual(dtype, FakeTorch.float32)
+        self.assertEqual(model.converted_dtype, FakeTorch.float32)
+
+    def test_prepare_birefnet_model_dtype_allows_uniform_cuda_half_model(self):
+        class FakeTorch:
+            float16 = "float16"
+            bfloat16 = "bfloat16"
+            float32 = "float32"
+
+        class FakeTensor:
+            dtype = FakeTorch.float16
+
+            def is_floating_point(self):
+                return True
+
+        class FakeModel:
+            converted_dtype = None
+
+            def parameters(self):
+                return iter([FakeTensor()])
+
+            def buffers(self):
+                return iter([FakeTensor()])
+
+            def to(self, dtype=None):
+                self.converted_dtype = dtype
+                return self
+
+        model = FakeModel()
+
+        dtype = server.prepare_birefnet_model_dtype(FakeTorch, model, "cuda")
+
+        self.assertEqual(dtype, FakeTorch.float16)
+        self.assertIsNone(model.converted_dtype)
+
     def test_auto_ai_resolution_uses_area_for_wide_images(self):
         image = Image.new("RGBA", (2048, 768))
 

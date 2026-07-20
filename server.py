@@ -1481,7 +1481,8 @@ def import_ai_matte_dependencies():
     except ModuleNotFoundError as exc:
         missing_name = getattr(exc, "name", "AI matting dependency")
         raise RuntimeError(
-            f"{missing_name} is not installed. Run: python -m pip install -r requirements-ai.txt"
+            f"{missing_name} is not installed. Run: {sys.executable} -m pip install -r requirements-ai.txt"
+            " or ./setup_ai_runtime.command on macOS."
         ) from exc
     return torch, transforms, AutoModelForImageSegmentation
 
@@ -1521,6 +1522,29 @@ def load_birefnet_model(model_key: str, requested_device: str):
     return model, device, normalized_model_key, repo_id
 
 
+def model_floating_dtypes(model) -> set:
+    dtypes = set()
+    for iterator in (model.parameters(), model.buffers()):
+        for tensor in iterator:
+            if hasattr(tensor, "is_floating_point") and tensor.is_floating_point():
+                dtypes.add(tensor.dtype)
+    return dtypes
+
+
+def prepare_birefnet_model_dtype(torch_module, model, device: str):
+    dtypes = model_floating_dtypes(model)
+    if (
+        str(device).startswith("cuda")
+        and len(dtypes) == 1
+        and next(iter(dtypes)) in {torch_module.float16, torch_module.bfloat16}
+    ):
+        return next(iter(dtypes))
+
+    if dtypes != {torch_module.float32}:
+        model.to(dtype=torch_module.float32)
+    return torch_module.float32
+
+
 def import_corridorkey_dependencies():
     configure_ai_model_cache()
     root = default_corridorkey_root()
@@ -1544,7 +1568,8 @@ def import_corridorkey_dependencies():
     except ModuleNotFoundError as exc:
         missing_name = getattr(exc, "name", "CorridorKey dependency")
         raise RuntimeError(
-            f"{missing_name} is not installed. Run: python -m pip install -r requirements-ai.txt"
+            f"{missing_name} is not installed. Run: {sys.executable} -m pip install -r requirements-ai.txt"
+            " or ./setup_ai_runtime.command on macOS."
         ) from exc
 
     try:
@@ -1846,13 +1871,8 @@ def run_birefnet_inference(
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ]
     )
-    input_tensor = transform(fitted_image).unsqueeze(0).to(device)
-    try:
-        model_dtype = next(model.parameters()).dtype
-    except StopIteration:
-        model_dtype = input_tensor.dtype
-    if str(device).startswith("cuda") and model_dtype in {torch_module.float16, torch_module.bfloat16}:
-        input_tensor = input_tensor.to(dtype=model_dtype)
+    model_dtype = prepare_birefnet_model_dtype(torch_module, model, device)
+    input_tensor = transform(fitted_image).unsqueeze(0).to(device=device, dtype=model_dtype)
     with torch_module.no_grad():
         prediction = model(input_tensor)[-1].sigmoid().to("cpu")
     mask = transforms.ToPILImage()(prediction[0].squeeze()).convert("L")

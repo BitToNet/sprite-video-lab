@@ -212,6 +212,6 @@ $env:SPRITE_VIDEO_LAB_REALESRGAN_MODEL_DIR = "D:\tools\realesrgan-ncnn-vulkan\mo
 
 - Windows 10/11。
 - 使用 PowerShell 执行命令。
-- Python 使用 3.10 或更高版本。
+- Python 使用 3.10 或更高版本，支持 Python 3.13。
 - 基础安装不默认安装 AI 运行时，避免下载大模型和 CUDA 依赖。
 - 默认端口使用 `8894`，默认只监听本机 `127.0.0.1`。

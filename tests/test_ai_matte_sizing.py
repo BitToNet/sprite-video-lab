@@ -8,6 +8,41 @@ from PIL import Image
 import server
 
 
+class MultipartFormTests(unittest.TestCase):
+    def test_parse_multipart_form_keeps_repeated_file_fields_and_text_fields(self):
+        boundary = "----SpriteVideoLabBoundary"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="method"\r\n'
+            "\r\n"
+            "classic\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="frames"; filename="b.png"\r\n'
+            "Content-Type: image/png\r\n"
+            "\r\n"
+        ).encode("utf-8") + b"frame-b" + (
+            f"\r\n--{boundary}\r\n"
+            'Content-Disposition: form-data; name="frames"; filename="a.png"\r\n'
+            "Content-Type: image/png\r\n"
+            "\r\n"
+        ).encode("utf-8") + b"frame-a" + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        form = server.parse_multipart_form(body, f"multipart/form-data; boundary={boundary}")
+        items = server.field_storage_items(form, "frames")
+
+        self.assertEqual(form.getfirst("method"), "classic")
+        self.assertEqual([item.filename for item in items], ["b.png", "a.png"])
+        self.assertEqual(items[0].type, "image/png")
+        self.assertEqual(items[0].file.read(), b"frame-b")
+
+    def test_parse_urlencoded_form_supports_getfirst(self):
+        form = server.parse_multipart_form(b"scale=0.5&method=classic", "application/x-www-form-urlencoded")
+
+        self.assertEqual(form.getfirst("scale"), "0.5")
+        self.assertEqual(form.getfirst("method"), "classic")
+        self.assertEqual(form.getfirst("missing", "fallback"), "fallback")
+
+
 class AiMatteSizingTests(unittest.TestCase):
     def test_auto_ai_resolution_uses_area_for_wide_images(self):
         image = Image.new("RGBA", (2048, 768))

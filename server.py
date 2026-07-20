@@ -1,25 +1,5 @@
 from __future__ import annotations
 
-import sys
-import time
-import os
-
-
-def _early_startup_log(message: str) -> None:
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] startup: {message}", file=sys.stderr, flush=True)
-
-
-_early_startup_log("python entered server.py")
-if os.environ.get("SPRITE_VIDEO_LAB_STARTUP_TRACE") == "1":
-    try:
-        import faulthandler
-
-        faulthandler.enable(file=sys.stderr)
-        faulthandler.dump_traceback_later(30, repeat=True, file=sys.stderr)
-        _early_startup_log("faulthandler enabled")
-    except Exception as exc:
-        _early_startup_log(f"faulthandler unavailable: {exc}")
-
 import argparse
 from email.parser import BytesParser
 from email.policy import default as EMAIL_POLICY
@@ -27,11 +7,13 @@ from io import BytesIO
 import json
 import math
 import mimetypes
+import os
 import re
 import shutil
-import socket
 import subprocess
+import sys
 import threading
+import time
 import uuid
 from datetime import datetime
 from fractions import Fraction
@@ -40,9 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-_early_startup_log("stdlib imports complete; importing Pillow")
 from PIL import Image, ImageChops, ImageFilter
-_early_startup_log("Pillow import complete")
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -180,25 +160,16 @@ _BIREFNET_MODEL_CACHE: dict[tuple[str, str], object] = {}
 _CORRIDORKEY_ENGINE_CACHE: dict[tuple[str, str], object] = {}
 
 
-def startup_log(message: str) -> None:
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] startup: {message}", file=sys.stderr, flush=True)
-
-
 def ensure_runtime_dirs() -> None:
-    startup_log(f"ensuring runtime directories under {WORK_DIR}")
     for directory in (APP_DIR, WORK_DIR, UPLOADS_DIR, JOBS_DIR, EXPORTS_DIR, PREVIEWS_DIR, LINE_CLEANER_DIR, MAGIC_DIR):
-        startup_log(f"ensuring directory: {directory}")
         directory.mkdir(parents=True, exist_ok=True)
-    startup_log("checking legacy settings migration")
     migrate_legacy_settings()
-    startup_log("runtime directories ready")
 
 
 def migrate_legacy_settings() -> None:
     if SETTINGS_PATH.resolve() == LEGACY_SETTINGS_PATH.resolve() or SETTINGS_PATH.exists() or not LEGACY_SETTINGS_PATH.exists():
         return
     try:
-        startup_log(f"migrating legacy settings from {LEGACY_SETTINGS_PATH} to {SETTINGS_PATH}")
         settings = json.loads(LEGACY_SETTINGS_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return
@@ -4417,9 +4388,6 @@ class AppHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args) -> None:
         return
 
-    def debug_log(self, message: str) -> None:
-        print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}", file=sys.stderr, flush=True)
-
     def send_json(self, payload: dict, status: int = HTTPStatus.OK) -> None:
         body = json_bytes(payload)
         self.send_response(status)
@@ -4433,10 +4401,6 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        self.debug_log(f"GET {parsed.path}")
-        if parsed.path == "/api/health":
-            self.send_json({"ok": True})
-            return
         if parsed.path == "/api/app-version":
             self.send_json(
                 {
@@ -4473,33 +4437,8 @@ class AppHandler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def do_HEAD(self) -> None:
-        parsed = urlparse(self.path)
-        self.debug_log(f"HEAD {parsed.path}")
-        if parsed.path == "/":
-            self.serve_app_file(APP_DIR / "index.html", content_type="text/html; charset=utf-8", send_body=False)
-            return
-        if parsed.path.startswith("/app/"):
-            relative = parsed.path.removeprefix("/app/")
-            self.serve_app_file(APP_DIR / relative, send_body=False)
-            return
-        if parsed.path.startswith("/media/upload/"):
-            upload_id = parsed.path.removeprefix("/media/upload/")
-            self.serve_media_file(source_video_path(upload_id), allow_range=True, send_body=False)
-            return
-        if parsed.path.startswith("/work/"):
-            relative = parsed.path.removeprefix("/work/")
-            self.serve_work_file((WORK_DIR / relative).resolve(), send_body=False)
-            return
-        if parsed.path.startswith("/exports/"):
-            relative = parsed.path.removeprefix("/exports/")
-            self.serve_export_file((configured_exports_dir() / relative).resolve(), send_body=False)
-            return
-        self.send_error(HTTPStatus.NOT_FOUND)
-
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        self.debug_log(f"POST {parsed.path}")
         try:
             if parsed.path == "/api/import-path":
                 payload = self.read_json_body()
@@ -4722,51 +4661,27 @@ class AppHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length > 0 else b""
         return parse_multipart_form(body, self.headers.get("Content-Type", ""))
 
-    def serve_app_file(
-        self,
-        path: Path,
-        content_type: str | None = None,
-        allow_range: bool = False,
-        send_body: bool = True,
-    ) -> None:
+    def serve_app_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
         if not is_within_root(path, APP_DIR):
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        self.serve_file(path, content_type=content_type, allow_range=allow_range, cache_control="no-store", send_body=send_body)
+        self.serve_file(path, content_type=content_type, allow_range=allow_range, cache_control="no-store")
 
-    def serve_work_file(
-        self,
-        path: Path,
-        content_type: str | None = None,
-        allow_range: bool = False,
-        send_body: bool = True,
-    ) -> None:
+    def serve_work_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
         if not is_within_root(path, WORK_DIR):
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        self.serve_file(path, content_type=content_type, allow_range=allow_range, send_body=send_body)
+        self.serve_file(path, content_type=content_type, allow_range=allow_range)
 
-    def serve_export_file(
-        self,
-        path: Path,
-        content_type: str | None = None,
-        allow_range: bool = False,
-        send_body: bool = True,
-    ) -> None:
+    def serve_export_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
         export_root = configured_exports_dir()
         if not is_within_root(path, export_root):
             self.send_error(HTTPStatus.FORBIDDEN)
             return
-        self.serve_file(path, content_type=content_type, allow_range=allow_range, send_body=send_body)
+        self.serve_file(path, content_type=content_type, allow_range=allow_range)
 
-    def serve_media_file(
-        self,
-        path: Path,
-        content_type: str | None = None,
-        allow_range: bool = False,
-        send_body: bool = True,
-    ) -> None:
-        self.serve_file(path, content_type=content_type, allow_range=allow_range, send_body=send_body)
+    def serve_media_file(self, path: Path, content_type: str | None = None, allow_range: bool = False) -> None:
+        self.serve_file(path, content_type=content_type, allow_range=allow_range)
 
     def serve_file(
         self,
@@ -4774,7 +4689,6 @@ class AppHandler(BaseHTTPRequestHandler):
         content_type: str | None = None,
         allow_range: bool = False,
         cache_control: str | None = None,
-        send_body: bool = True,
     ) -> None:
         path = path.resolve()
         if not path.exists() or not path.is_file():
@@ -4802,8 +4716,6 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
             self.send_header("Content-Length", str(length))
             self.end_headers()
-            if not send_body:
-                return
             with path.open("rb") as handle:
                 handle.seek(start)
                 self.wfile.write(handle.read(length))
@@ -4817,47 +4729,19 @@ class AppHandler(BaseHTTPRequestHandler):
         if allow_range:
             self.send_header("Accept-Ranges", "bytes")
         self.end_headers()
-        if not send_body:
-            return
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile)
 
 
-def serve_accept_loop(server: ThreadingHTTPServer) -> None:
-    server.socket.settimeout(0.5)
-    while True:
-        try:
-            request, client_address = server.get_request()
-        except socket.timeout:
-            continue
-        except OSError:
-            break
-
-        try:
-            if server.verify_request(request, client_address):
-                server.process_request(request, client_address)
-            else:
-                server.shutdown_request(request)
-        except Exception:
-            server.handle_error(request, client_address)
-            server.shutdown_request(request)
-
-
 def serve_once(host: str, port: int) -> None:
-    startup_log(f"serve_once requested for {host}:{port}")
     ensure_runtime_dirs()
-    startup_log(f"binding HTTP server on {host}:{port}")
     server = ThreadingHTTPServer((host, port), AppHandler)
-    server.daemon_threads = True
-    startup_log(f"HTTP server bound on {host}:{port}")
-    print(f"Sprite Video Lab running at http://{host}:{port}", flush=True)
+    print(f"Sprite Video Lab running at http://{host}:{port}")
     try:
-        startup_log("entering accept loop")
-        serve_accept_loop(server)
+        server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        startup_log("closing HTTP server")
         server.server_close()
 
 
@@ -4873,7 +4757,6 @@ def stop_child_process(process: subprocess.Popen | None) -> None:
 
 
 def run_with_reloader(host: str, port: int) -> None:
-    startup_log(f"run_with_reloader requested for {host}:{port}")
     ensure_runtime_dirs()
     watch_state = watch_snapshot()
     child: subprocess.Popen | None = None
@@ -4907,7 +4790,6 @@ def run_with_reloader(host: str, port: int) -> None:
 
 
 def main() -> None:
-    startup_log("main entered")
     parser = argparse.ArgumentParser(description="Run Sprite Video Lab.")
     parser.add_argument("--serve", action="store_true", help="Run the HTTP server once without file watching.")
     parser.add_argument("--host", default=None, help=f"Host to bind. Defaults to ${HOST_ENV} or {DEFAULT_HOST}.")
@@ -4915,7 +4797,6 @@ def main() -> None:
     args = parser.parse_args()
     host = configured_host(args.host)
     port = configured_port(args.port)
-    startup_log(f"parsed args: serve={args.serve}, host={host}, port={port}")
     if args.serve:
         serve_once(host, port)
         return
@@ -4923,5 +4804,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    startup_log("module loaded")
     main()

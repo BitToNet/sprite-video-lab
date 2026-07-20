@@ -74,7 +74,7 @@ Sprite Video Lab 目前提供这些背景处理模式：
 
 ## 环境要求
 
-- Python 3.10+
+- Python 3.10+，兼容 Python 3.13
 - Pillow
 - ffmpeg / ffprobe
 - 可选 AI 环境：
@@ -89,8 +89,9 @@ Sprite Video Lab 目前提供这些背景处理模式：
 
 ## 安装
 
-安装交给 agent 执行，避免手动配置 Python、ffmpeg、AI 依赖和模型缓存时出错。
+Windows 用户可以按中文安装说明手动安装；也可以交给 agent 执行，避免手动配置 Python、ffmpeg、AI 依赖和模型缓存时出错。
 
+- [Windows 中文安装说明](./WINDOWS_INSTALL.zh-CN.md)
 - Agent 安装说明：[AGENT_INSTALL.md](./AGENT_INSTALL.md)
 - AI 抠图细节：[AI_MATTING.md](./AI_MATTING.md)
 
@@ -147,10 +148,12 @@ app/                              前端 UI 和浏览器逻辑
 app/line-cleaner-experiment.*     实验性线稿缩小清理页面
 server.py                         本地 HTTP 服务和处理流水线
 AGENT_INSTALL.md                  给 agent 执行的安装和启动说明
+WINDOWS_INSTALL.zh-CN.md          Windows 中文安装说明
 requirements.txt                  基础运行依赖
 requirements-ai.txt               可选 AI 抠图依赖
 setup_ai_runtime.bat              Windows AI 环境安装脚本
 start_sprite_video_lab.bat        Windows 启动器
+stop_sprite_video_lab.bat         Windows 关闭器
 start_sprite_video_lab_portable.bat 便携版启动器
 build_portable_bundle.ps1         便携版打包脚本
 work/                             运行时输出目录，已被 git 忽略

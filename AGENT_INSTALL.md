@@ -122,6 +122,13 @@ Start-Process -FilePath $python `
   -WindowStyle Hidden
 ```
 
+For an interactive Windows user, the repository also provides:
+
+```powershell
+.\start_sprite_video_lab.bat
+.\stop_sprite_video_lab.bat
+```
+
 Verify:
 
 ```powershell
